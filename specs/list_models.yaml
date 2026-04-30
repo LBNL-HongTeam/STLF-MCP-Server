@@ -1,0 +1,81 @@
+# List Models Specification
+# For AlphaBuilding-Agents SpecRegistry and AI discovery
+
+id: forecasting.list_models
+version: "1.0.0"
+mcp_server: load_forecasting
+mcp_tool: list_models
+
+category: forecasting
+tags: [model_registry, discovery, management]
+description: >
+  List all trained models in the registry with their metadata and metrics.
+  Useful for discovering available models before evaluation or comparison.
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+inputs:
+  - name: building_name
+    type: string
+    required: false
+    description: Filter models by building name
+
+  - name: model_type
+    type: string
+    required: false
+    description: Filter by model type (e.g., "LinearRegression")
+
+  - name: sort_by
+    type: string
+    required: false
+    default: "created_at"
+    enum: ["created_at", "validation_cv_rmse", "model_type"]
+    description: Sort order for results
+
+  - name: limit
+    type: integer
+    required: false
+    default: 20
+    description: Maximum number of models to return
+
+# ==============================================================================
+# OUTPUTS
+# ==============================================================================
+outputs:
+  success:
+    type: boolean
+
+  error:
+    type: string
+    description: Error message if success=false
+
+  models:
+    type: array
+    description: List of trained models matching filters
+    items:
+      type: object
+      properties:
+        model_id: { type: string }
+        model_type: { type: string }
+        building_name: { type: string }
+        created_at: { type: string, format: datetime }
+        validation_cv_rmse: { type: number, units: "%" }
+        lookback_hours: { type: integer }
+        horizon_hours: { type: integer }
+
+  total_count:
+    type: integer
+    description: Total models in registry (before limit applied)
+
+  filters_applied:
+    type: object
+    description: Summary of filters that were applied
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+notes:
+  - "Returns models sorted by creation date (newest first) by default"
+  - "Sort by validation_cv_rmse to find best performing models"
+  - "Use model_id from results with evaluate_forecast_model"

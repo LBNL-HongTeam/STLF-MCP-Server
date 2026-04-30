@@ -1,0 +1,360 @@
+"""
+Model training wrapper using Darts.
+
+Supports:
+- NaiveMean: Predicts mean of training data
+- NaiveSeasonal: Repeats pattern from K periods ago
+- NaiveMovingAverage: Moving average baseline
+- LinearRegression: Regression on lagged features
+"""
+
+from typing import Optional, Any
+import time
+import logging
+
+from darts import TimeSeries
+from darts.models import (
+    NaiveMean,
+    NaiveSeasonal,
+    NaiveMovingAverage,
+    RegressionModel,
+)
+from sklearn.linear_model import LinearRegression
+
+from .evaluator import calculate_metrics
+from .frequency_utils import get_seasonality_steps
+
+logger = logging.getLogger(__name__)
+
+
+# Model class mapping
+MODEL_CLASSES = {
+    "NaiveMean": NaiveMean,
+    "NaiveSeasonal": NaiveSeasonal,
+    "NaiveMovingAverage": NaiveMovingAverage,
+    "LinearRegression": "RegressionModel",  # Special handling
+}
+
+# Darts class names for metadata
+DARTS_CLASS_NAMES = {
+    "NaiveMean": "darts.models.NaiveMean",
+    "NaiveSeasonal": "darts.models.NaiveSeasonal",
+    "NaiveMovingAverage": "darts.models.NaiveMovingAverage",
+    "LinearRegression": "darts.models.RegressionModel",
+}
+
+
+def get_available_models() -> list[str]:
+    """Return list of available model types."""
+    return list(MODEL_CLASSES.keys())
+
+
+def create_model(
+    model_type: str,
+    lookback: int = 24,
+    horizon: int = 6,
+    use_covariates: bool = False,
+    frequency: str = "h",
+) -> Any:
+    """
+    Create a model instance.
+
+    Args:
+        model_type: Type of model to create
+        lookback: Input window size in TIME STEPS (not hours)
+        horizon: Output horizon in TIME STEPS (not hours)
+        use_covariates: Whether past covariates will be used
+        frequency: Data frequency for NaiveSeasonal seasonality
+
+    Returns:
+        Instantiated model
+
+    Raises:
+        ValueError: If model_type is unknown
+    """
+    if model_type not in MODEL_CLASSES:
+        raise ValueError(
+            f"Unknown model type: {model_type}. "
+            f"Available: {list(MODEL_CLASSES.keys())}"
+        )
+
+    if model_type == "LinearRegression":
+        # Configure lags_past_covariates if covariates are used
+        model = RegressionModel(
+            lags=lookback,
+            lags_past_covariates=lookback if use_covariates else None,
+            output_chunk_length=horizon,
+            model=LinearRegression(),
+        )
+    elif model_type == "NaiveSeasonal":
+        # K = daily seasonality in steps (96 for 15min, 24 for hourly)
+        seasonality_k = get_seasonality_steps(frequency)
+        model = NaiveSeasonal(K=seasonality_k)
+    elif model_type == "NaiveMovingAverage":
+        # Use input_chunk_length for moving average window
+        model = NaiveMovingAverage(input_chunk_length=lookback)
+    else:
+        model_class = MODEL_CLASSES[model_type]
+        model = model_class()
+
+    return model
+
+
+def train_model(
+    train_series: TimeSeries,
+    val_series: TimeSeries,
+    model_type: str = "LinearRegression",
+    lookback: int = 24,
+    horizon: int = 6,
+    train_covariates: Optional[TimeSeries] = None,
+    val_covariates: Optional[TimeSeries] = None,
+    scaler=None,
+    frequency: str = "h",
+) -> tuple[Any, dict, dict, dict]:
+    """
+    Train a forecasting model.
+
+    Args:
+        train_series: Training time series (scaled)
+        val_series: Validation time series (scaled)
+        model_type: Type of model to train
+        lookback: Input window size in TIME STEPS (not hours)
+        horizon: Forecast horizon in TIME STEPS (not hours)
+        train_covariates: Training covariates (optional)
+        val_covariates: Validation covariates (optional)
+        scaler: Scaler for inverse transform when computing metrics
+        frequency: Data frequency for seasonality calculation
+
+    Returns:
+        Tuple of (model, training_metrics, validation_metrics, info)
+    """
+    start_time = time.time()
+
+    # Create model
+    use_covariates = train_covariates is not None
+    model = create_model(
+        model_type, lookback, horizon,
+        use_covariates=use_covariates,
+        frequency=frequency
+    )
+    logger.info(
+        f"Created {model_type} model with lookback={lookback}, "
+        f"horizon={horizon}, covariates={use_covariates}"
+    )
+
+    # Train model
+    try:
+        if hasattr(model, "fit"):
+            if (train_covariates is not None and
+                    model_type == "LinearRegression"):
+                model.fit(train_series, past_covariates=train_covariates)
+            else:
+                model.fit(train_series)
+            logger.info("Model training completed")
+    except Exception as e:
+        logger.error(f"Model training failed: {e}")
+        raise
+
+    training_time = time.time() - start_time
+
+    # Evaluate on training data
+    try:
+        train_pred = _generate_predictions(
+            model, train_series, train_covariates, lookback, horizon
+        )
+        training_metrics = calculate_metrics(
+            train_series[lookback:],
+            train_pred,
+            scaler=scaler,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to compute training metrics: {e}")
+        training_metrics = {
+            "rmse": None, "mae": None, "mape": None,
+            "cv_rmse": None, "r_squared": None
+        }
+
+    # Evaluate on validation data
+    try:
+        val_pred = _generate_predictions(
+            model, val_series, val_covariates, lookback, horizon
+        )
+        validation_metrics = calculate_metrics(
+            val_series[lookback:],
+            val_pred,
+            scaler=scaler,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to compute validation metrics: {e}")
+        validation_metrics = {
+            "rmse": None, "mae": None, "mape": None,
+            "cv_rmse": None, "r_squared": None
+        }
+
+    # Training info
+    training_info = {
+        "training_time_seconds": round(training_time, 2),
+        "darts_model_class": DARTS_CLASS_NAMES.get(model_type, "unknown"),
+        "lookback_hours": lookback,
+        "horizon_hours": horizon,
+    }
+
+    return model, training_metrics, validation_metrics, training_info
+
+
+def _generate_predictions(
+    model: Any,
+    series: TimeSeries,
+    covariates: Optional[TimeSeries],
+    lookback: int,
+    horizon: int,
+) -> TimeSeries:
+    """
+    Generate predictions using historical_forecasts.
+
+    Args:
+        model: Trained model
+        series: Input series
+        covariates: Optional covariates
+        lookback: Lookback window
+        horizon: Forecast horizon
+
+    Returns:
+        Concatenated predictions as TimeSeries
+    """
+    # Check if this is a LocalForecastingModel (naive baselines)
+    model_class_name = model.__class__.__name__
+    is_local_model = model_class_name in [
+        "NaiveMean", "NaiveSeasonal", "NaiveMovingAverage"
+    ]
+
+    if is_local_model:
+        # LocalForecastingModels don't support historical_forecasts
+        # with retrain=False. Implement manual walk-forward validation
+        logger.info(
+            f"Using manual walk-forward validation for {model_class_name}"
+        )
+        return _manual_walk_forward(model, series, lookback, horizon)
+
+    # For GlobalForecastingModels, use historical_forecasts
+    start = lookback
+
+    try:
+        if covariates is not None and hasattr(model, "past_covariates"):
+            predictions = model.historical_forecasts(
+                series,
+                past_covariates=covariates,
+                start=start,
+                forecast_horizon=horizon,
+                stride=horizon,
+                retrain=False,
+                verbose=False,
+            )
+        else:
+            predictions = model.historical_forecasts(
+                series,
+                start=start,
+                forecast_horizon=horizon,
+                stride=horizon,
+                retrain=False,
+                verbose=False,
+            )
+    except Exception as e:
+        logger.warning(f"historical_forecasts failed: {e}")
+        raise
+
+    return predictions
+
+
+def _manual_walk_forward(
+    model: Any,
+    series: TimeSeries,
+    lookback: int,
+    horizon: int,
+) -> TimeSeries:
+    """
+    Perform manual walk-forward validation for LocalForecastingModels.
+
+    LocalForecastingModels need to be refit at each step since they don't
+    support historical_forecasts with retrain=False.
+
+    Args:
+        model: Trained LocalForecastingModel
+        series: Input series
+        lookback: Minimum lookback window
+        horizon: Forecast horizon
+
+    Returns:
+        Concatenated predictions as TimeSeries
+    """
+    from darts import concatenate
+
+    predictions_list = []
+    start_idx = lookback
+
+    # Generate predictions at regular intervals
+    while start_idx + horizon <= len(series):
+        # Get training data up to current point
+        train_series = series[:start_idx]
+
+        # Refit the model on this training data
+        # Create a new instance with same parameters
+        model_class = model.__class__
+        if hasattr(model, 'K'):  # NaiveSeasonal
+            new_model = model_class(K=model.K)
+        elif hasattr(model, 'input_chunk_length'):  # NaiveMovingAverage
+            new_model = model_class(
+                input_chunk_length=model.input_chunk_length
+            )
+        else:  # NaiveMean
+            new_model = model_class()
+
+        # Fit and predict
+        new_model.fit(train_series)
+        pred = new_model.predict(n=horizon)
+        predictions_list.append(pred)
+
+        # Move forward by horizon steps
+        start_idx += horizon
+
+    # Concatenate all predictions
+    if predictions_list:
+        return concatenate(predictions_list, axis=0)
+    else:
+        # If no predictions, return empty prediction
+        return model.predict(n=horizon)
+
+
+def evaluate_model(
+    model: Any,
+    test_series: TimeSeries,
+    test_covariates: Optional[TimeSeries] = None,
+    lookback: int = 24,
+    horizon: int = 6,
+    scaler=None,
+) -> tuple[dict, TimeSeries]:
+    """
+    Evaluate a trained model on test data.
+
+    Args:
+        model: Trained model
+        test_series: Test time series
+        test_covariates: Test covariates (optional)
+        lookback: Lookback window
+        horizon: Forecast horizon
+        scaler: Scaler for inverse transform
+
+    Returns:
+        Tuple of (metrics_dict, predictions_series)
+    """
+    predictions = _generate_predictions(
+        model, test_series, test_covariates, lookback, horizon
+    )
+
+    metrics = calculate_metrics(
+        test_series[lookback:],
+        predictions,
+        scaler=scaler,
+    )
+
+    return metrics, predictions

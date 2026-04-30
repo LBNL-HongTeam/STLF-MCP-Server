@@ -1,0 +1,146 @@
+# Evaluate Forecast Model Specification
+# For AlphaBuilding-Agents SpecRegistry and AI discovery
+
+id: forecasting.evaluate_model
+version: "1.0.0"
+mcp_server: load_forecasting
+mcp_tool: evaluate_forecast_model
+
+category: forecasting
+tags: [load_forecasting, evaluation, testing, metrics]
+description: >
+  Evaluate a trained forecasting model on new/test data.
+  Loads a previously trained model and generates predictions with accuracy metrics.
+  Uses column mapping from training if not explicitly provided.
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+inputs:
+  # --- Model Selection ---
+  - name: model_id
+    type: string
+    required: true
+    description: >
+      ID of a trained model (returned from train_forecast_model).
+      Use list_models tool to see available models.
+    example: "Building_33_LinearRegression_20250124_143022"
+
+  # --- Test Data ---
+  - name: csv_path
+    type: string
+    required: true
+    delivery_mode: file_reference
+    description: >
+      Path to CSV with test data. Should have same column structure as training data.
+      Test data should be from a period NOT seen during training.
+    example: "/data/building_33_test.csv"
+    constraints:
+      min_duration: "P1W"
+      min_coverage: 0.90
+
+  - name: column_mapping
+    type: object
+    required: false
+    description: >
+      Column mapping. If not provided, uses mapping stored in model metadata
+      from training. Only specify if test CSV has different column names.
+
+  # --- Output Options ---
+  - name: return_predictions
+    type: boolean
+    required: false
+    default: true
+    description: Include predicted values in output (can be large)
+
+  - name: output_csv_path
+    type: string
+    required: false
+    description: Optional path to save predictions as CSV file
+
+  - name: include_residual_analysis
+    type: boolean
+    required: false
+    default: false
+    description: Include residual statistics and autocorrelation analysis
+
+# ==============================================================================
+# OUTPUTS
+# ==============================================================================
+outputs:
+  success:
+    type: boolean
+    description: Whether evaluation completed successfully
+
+  error:
+    type: string
+    description: Error message if success=false
+
+  model_id:
+    type: string
+    description: Model that was evaluated
+
+  model_type:
+    type: string
+
+  test_metrics:
+    type: object
+    description: Performance metrics on test data
+    properties:
+      rmse: { type: number }
+      mae: { type: number }
+      mape: { type: number, units: "%" }
+      cv_rmse: { type: number, units: "%" }
+      r_squared: { type: number }
+
+  comparison_to_validation:
+    type: object
+    description: Compare test metrics to validation metrics from training
+    properties:
+      cv_rmse_diff: { type: number, description: "test_cv_rmse - validation_cv_rmse" }
+      performance_status:
+        type: string
+        enum: ["similar", "degraded", "improved"]
+        description: "Whether test performance is similar to validation"
+
+  test_summary:
+    type: object
+    properties:
+      test_samples: { type: integer }
+      start_date: { type: string }
+      end_date: { type: string }
+      column_mapping_source:
+        type: string
+        enum: ["provided", "from_model_metadata"]
+
+  predictions:
+    type: array
+    description: Predicted values (if return_predictions=true)
+    items:
+      type: object
+      properties:
+        timestamp: { type: string, format: datetime }
+        actual: { type: number }
+        predicted: { type: number }
+        residual: { type: number, description: "actual - predicted" }
+
+  residual_analysis:
+    type: object
+    description: Residual statistics (if include_residual_analysis=true)
+    properties:
+      mean_residual: { type: number, description: "Should be ~0 for unbiased model" }
+      std_residual: { type: number }
+      autocorrelation_lag1: { type: number, description: "Should be ~0 for good model" }
+
+  output_csv_path:
+    type: string
+    description: Path to saved CSV (if output_csv_path provided)
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+notes:
+  - "Test data should be from a period not seen during training"
+  - "If cv_rmse degrades significantly vs validation, model may not generalize well"
+  - "Predictions array can be large; use output_csv_path for big datasets"
+  - "Column mapping from training is automatically reused if not specified"
