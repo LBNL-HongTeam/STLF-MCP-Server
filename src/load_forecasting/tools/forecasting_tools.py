@@ -309,11 +309,11 @@ async def evaluate_forecast_model(
             if loader.target_scaler:
                 pred_original = loader.target_scaler.inverse_transform(predictions)
                 actual_original = loader.target_scaler.inverse_transform(
-                    test_series.slice_n_points_after(start=lookback)
+                    test_series.slice_n_points_after(start=lookback_steps)
                 )
             else:
                 pred_original = predictions
-                actual_original = test_series.slice_n_points_after(start=lookback)
+                actual_original = test_series.slice_n_points_after(start=lookback_steps)
 
             # Build predictions list
             pred_list = []
