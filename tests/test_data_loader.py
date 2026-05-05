@@ -142,13 +142,13 @@ class TestBasicLoading:
 
     def test_to_darts_series_returns_target(self, sample_csv):
         loader = ForecastingDataLoader(csv_path=sample_csv)
-        target, _ = loader.to_darts_series()
+        target, _, _ = loader.to_darts_series()
         assert target is not None
         assert len(target) == 200
 
     def test_to_darts_series_returns_covariates(self, sample_csv):
         loader = ForecastingDataLoader(csv_path=sample_csv)
-        _, cov = loader.to_darts_series()
+        _, cov, _ = loader.to_darts_series()
         # calendar + lag + temperature -> covariates must be non-None
         assert cov is not None
 
@@ -358,3 +358,182 @@ class TestNegativeValues:
             assert any("negative" in r.message for r in caplog.records)
         finally:
             Path(path).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Future covariates
+# ---------------------------------------------------------------------------
+
+def _make_csv_with_future_covariates(
+    periods: int = 300,
+    freq: str = "h",
+) -> str:
+    """CSV with a past covariate (outdoor_temp) and a future covariate (temp_forecast)."""
+    index = pd.date_range("2023-01-01", periods=periods, freq=freq)
+    df = pd.DataFrame({
+        "timestamp": index,
+        "electricity_kwh": [100.0 + i * 0.5 for i in range(periods)],
+        "outdoor_temp": [50.0 + i * 0.1 for i in range(periods)],
+        "temp_forecast": [52.0 + i * 0.1 for i in range(periods)],
+    })
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
+    df.to_csv(f.name, index=False)
+    f.close()
+    return f.name
+
+
+@pytest.fixture
+def csv_with_future_covariates():
+    path = _make_csv_with_future_covariates()
+    yield path
+    Path(path).unlink(missing_ok=True)
+
+
+class TestFutureCovariates:
+
+    def test_future_covariates_not_auto_detected(self, csv_with_future_covariates):
+        """Future covariates are never auto-detected; temp_forecast stays unrecognised."""
+        loader = ForecastingDataLoader(csv_path=csv_with_future_covariates)
+        assert loader.column_mapping.get("future_covariates") == []
+        # temp_forecast matches no auto-detect future pattern — it ends up in
+        # past_covariates because "temp" matches the past pattern
+        assert "temp_forecast" in loader.column_mapping.get("past_covariates", [])
+
+    def test_explicit_future_covariates_in_mapping(self, csv_with_future_covariates):
+        """Explicitly listed future covariates are stored in column_mapping."""
+        mapping = {
+            "datetime": "timestamp",
+            "target": "electricity_kwh",
+            "past_covariates": ["outdoor_temp"],
+            "future_covariates": ["temp_forecast"],
+        }
+        loader = ForecastingDataLoader(
+            csv_path=csv_with_future_covariates,
+            column_mapping=mapping,
+            add_calendar_features=False,
+            lag_hours=[],
+        )
+        assert loader.column_mapping["future_covariates"] == ["temp_forecast"]
+        assert loader.column_mapping["past_covariates"] == ["outdoor_temp"]
+
+    def test_future_covariates_key_always_present(self, sample_csv):
+        """future_covariates key must always exist in column_mapping, even when empty."""
+        loader = ForecastingDataLoader(csv_path=sample_csv)
+        assert "future_covariates" in loader.column_mapping
+
+    def test_future_covariate_returns_third_series(self, csv_with_future_covariates):
+        """to_darts_series should return a non-None 3rd element for future covariates."""
+        mapping = {
+            "datetime": "timestamp",
+            "target": "electricity_kwh",
+            "past_covariates": [],
+            "future_covariates": ["temp_forecast"],
+        }
+        loader = ForecastingDataLoader(
+            csv_path=csv_with_future_covariates,
+            column_mapping=mapping,
+            add_calendar_features=False,
+            lag_hours=[],
+        )
+        _, past_cov, future_cov = loader.to_darts_series(fit_scalers=True)
+        assert past_cov is None
+        assert future_cov is not None
+        assert len(future_cov) == 300
+
+    def test_future_covariate_scaler_fitted(self, csv_with_future_covariates):
+        """future_covariate_scaler should be fitted after to_darts_series."""
+        mapping = {
+            "datetime": "timestamp",
+            "target": "electricity_kwh",
+            "past_covariates": [],
+            "future_covariates": ["temp_forecast"],
+        }
+        loader = ForecastingDataLoader(
+            csv_path=csv_with_future_covariates,
+            column_mapping=mapping,
+            add_calendar_features=False,
+            lag_hours=[],
+        )
+        loader.to_darts_series(fit_scalers=True)
+        assert loader.future_covariate_scaler is not None
+
+    def test_future_covariate_scaler_reused_on_transform(self, csv_with_future_covariates):
+        """fit_scalers=False should apply the existing future_covariate_scaler."""
+        mapping = {
+            "datetime": "timestamp",
+            "target": "electricity_kwh",
+            "past_covariates": [],
+            "future_covariates": ["temp_forecast"],
+        }
+        loader = ForecastingDataLoader(
+            csv_path=csv_with_future_covariates,
+            column_mapping=mapping,
+            add_calendar_features=False,
+            lag_hours=[],
+        )
+        _, _, fut_cov_fit = loader.to_darts_series(fit_scalers=True)
+        # Now reuse the scaler (fit_scalers=False)
+        _, _, fut_cov_transform = loader.to_darts_series(fit_scalers=False)
+        # Both should produce the same values since scaler is already fitted
+        import numpy as np
+        np.testing.assert_allclose(
+            fut_cov_fit.values(), fut_cov_transform.values(), rtol=1e-5
+        )
+
+    def test_split_train_val_copies_future_scaler(self, csv_with_future_covariates):
+        """split_train_val sub-loaders should propagate the future_covariate_scaler."""
+        mapping = {
+            "datetime": "timestamp",
+            "target": "electricity_kwh",
+            "past_covariates": [],
+            "future_covariates": ["temp_forecast"],
+        }
+        loader = ForecastingDataLoader(
+            csv_path=csv_with_future_covariates,
+            column_mapping=mapping,
+            add_calendar_features=False,
+            lag_hours=[],
+        )
+        train_loader, val_loader = loader.split_train_val(validation_split=0.2)
+        train_loader.to_darts_series(fit_scalers=True)
+        # Manually propagate scalers (as the tool does)
+        val_loader.future_covariate_scaler = train_loader.future_covariate_scaler
+        _, _, val_fut = val_loader.to_darts_series(fit_scalers=False)
+        assert val_fut is not None
+
+    def test_missing_future_covariate_column_warns(self, csv_with_future_covariates, caplog):
+        """A future covariate column that's missing in the CSV should warn and be dropped."""
+        import logging
+        mapping = {
+            "datetime": "timestamp",
+            "target": "electricity_kwh",
+            "past_covariates": [],
+            "future_covariates": ["nonexistent_col"],
+        }
+        with caplog.at_level(logging.WARNING, logger="load_forecasting.core.data_loader"):
+            loader = ForecastingDataLoader(
+                csv_path=csv_with_future_covariates,
+                column_mapping=mapping,
+                add_calendar_features=False,
+                lag_hours=[],
+            )
+        assert loader.column_mapping["future_covariates"] == []
+        assert any("nonexistent_col" in r.message for r in caplog.records)
+
+    def test_get_data_summary_includes_future_covariates(self, csv_with_future_covariates):
+        """data_summary must include future_covariate_columns key."""
+        mapping = {
+            "datetime": "timestamp",
+            "target": "electricity_kwh",
+            "past_covariates": [],
+            "future_covariates": ["temp_forecast"],
+        }
+        loader = ForecastingDataLoader(
+            csv_path=csv_with_future_covariates,
+            column_mapping=mapping,
+            add_calendar_features=False,
+            lag_hours=[],
+        )
+        summary = loader.get_data_summary()
+        assert "future_covariate_columns" in summary
+        assert "temp_forecast" in summary["future_covariate_columns"]

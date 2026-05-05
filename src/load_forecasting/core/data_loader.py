@@ -9,6 +9,7 @@ Handles:
 - Target non-negativity and coverage checks
 - Calendar feature engineering (always on)
 - Lag feature engineering from target (24h, 48h, 168h)
+- Future covariates support (columns known at forecast time, e.g. weather forecasts)
 - Data validation against spec constraints
 """
 
@@ -94,7 +95,9 @@ class ForecastingDataLoader:
         Args:
             csv_path: Path to CSV file.
             column_mapping: Map CSV columns to roles (datetime, target,
-                past_covariates).  Auto-detected if not provided.
+                past_covariates, future_covariates).  Auto-detected if not
+                provided.  ``future_covariates`` must be explicitly listed —
+                they are never auto-detected.
             frequency: Expected data frequency ('15min', '30min', 'h').
                 Validated against the actual timestamps in the file.
             missing_value_strategy: How to handle missing values
@@ -185,6 +188,7 @@ class ForecastingDataLoader:
         # ------------------------------------------------------------------
         self.target_scaler: Optional[Scaler] = None
         self.covariate_scaler: Optional[Scaler] = None
+        self.future_covariate_scaler: Optional[Scaler] = None
 
     # ------------------------------------------------------------------
     # Column resolution
@@ -193,10 +197,12 @@ class ForecastingDataLoader:
     def _resolve_mapping(self, mapping: Optional[dict]) -> dict:
         """Auto-detect columns if mapping not provided."""
         if mapping:
-            # Ensure past_covariates key always exists
+            # Ensure past_covariates and future_covariates keys always exist
+            mapping = dict(mapping)
             if "past_covariates" not in mapping:
-                mapping = dict(mapping)
                 mapping["past_covariates"] = []
+            if "future_covariates" not in mapping:
+                mapping["future_covariates"] = []
             return mapping
 
         patterns = get_auto_detect_patterns("train_forecast_model")
@@ -250,6 +256,10 @@ class ForecastingDataLoader:
             and col not in [resolved.get("datetime"), resolved.get("target")]
         ]
 
+        # Future covariates are never auto-detected — they must be explicitly
+        # listed by the caller because their semantics differ from past covariates.
+        resolved["future_covariates"] = []
+
         logger.info("Resolved column mapping: %s", resolved)
         return resolved
 
@@ -292,16 +302,28 @@ class ForecastingDataLoader:
                 f"Available columns: {available}"
             )
 
-        # Warn and drop any covariate columns that don't exist
+        # Warn and drop any past covariate columns that don't exist
         cov_cols = self.column_mapping.get("past_covariates", [])
         missing_covs = [c for c in cov_cols if c not in self.df.columns]
         if missing_covs:
             logger.warning(
-                "Covariate column(s) not found in CSV and will be skipped: %s",
+                "Past covariate column(s) not found in CSV and will be skipped: %s",
                 missing_covs,
             )
             self.column_mapping["past_covariates"] = [
                 c for c in cov_cols if c in self.df.columns
+            ]
+
+        # Warn and drop any future covariate columns that don't exist
+        fut_cov_cols = self.column_mapping.get("future_covariates", [])
+        missing_fut_covs = [c for c in fut_cov_cols if c not in self.df.columns]
+        if missing_fut_covs:
+            logger.warning(
+                "Future covariate column(s) not found in CSV and will be skipped: %s",
+                missing_fut_covs,
+            )
+            self.column_mapping["future_covariates"] = [
+                c for c in fut_cov_cols if c in self.df.columns
             ]
 
     def _validate_frequency(self) -> None:
@@ -447,6 +469,10 @@ class ForecastingDataLoader:
             if cov_col in self.df.columns and self.df[cov_col].isna().any():
                 self.df[cov_col] = self.df[cov_col].interpolate(method="time")
 
+        for cov_col in self.column_mapping.get("future_covariates", []):
+            if cov_col in self.df.columns and self.df[cov_col].isna().any():
+                self.df[cov_col] = self.df[cov_col].interpolate(method="time")
+
     # ------------------------------------------------------------------
     # Feature engineering
     # ------------------------------------------------------------------
@@ -520,7 +546,7 @@ class ForecastingDataLoader:
 
     def to_darts_series(
         self, fit_scalers: bool = True
-    ) -> tuple[TimeSeries, Optional[TimeSeries]]:
+    ) -> tuple[TimeSeries, Optional[TimeSeries], Optional[TimeSeries]]:
         """
         Convert to Darts TimeSeries objects.
 
@@ -529,7 +555,8 @@ class ForecastingDataLoader:
                 apply the already-fitted scalers (required for val/test data).
 
         Returns:
-            Tuple of (target_series, covariate_series or None).
+            Tuple of (target_series, past_covariate_series or None,
+            future_covariate_series or None).
         """
         target_col = self.column_mapping["target"]
         time_col_name = self.df.index.name or "index"
@@ -551,7 +578,7 @@ class ForecastingDataLoader:
         elif self.target_scaler:
             target_series = self.target_scaler.transform(target_series)
 
-        # Covariate series
+        # Past covariate series
         cov_cols = [c for c in self.column_mapping.get("past_covariates", []) if c in self.df.columns]
         covariate_series = None
 
@@ -571,7 +598,34 @@ class ForecastingDataLoader:
             elif self.covariate_scaler:
                 covariate_series = self.covariate_scaler.transform(covariate_series)
 
-        return target_series, covariate_series
+        # Future covariate series
+        fut_cov_cols = [
+            c for c in self.column_mapping.get("future_covariates", [])
+            if c in self.df.columns
+        ]
+        future_covariate_series = None
+
+        if fut_cov_cols:
+            future_covariate_series = TimeSeries.from_dataframe(
+                df_reset,
+                time_col=time_col_name,
+                value_cols=fut_cov_cols,
+                freq=self.frequency,
+                fill_missing_dates=True,
+                fillna_value=None,
+            )
+
+            if fit_scalers:
+                self.future_covariate_scaler = Scaler()
+                future_covariate_series = self.future_covariate_scaler.fit_transform(
+                    future_covariate_series
+                )
+            elif self.future_covariate_scaler:
+                future_covariate_series = self.future_covariate_scaler.transform(
+                    future_covariate_series
+                )
+
+        return target_series, covariate_series, future_covariate_series
 
     # ------------------------------------------------------------------
     # Summary
@@ -588,6 +642,7 @@ class ForecastingDataLoader:
             "end_date": self.df.index.max().isoformat(),
             "target_column": target_col,
             "covariate_columns": self.column_mapping.get("past_covariates", []),
+            "future_covariate_columns": self.column_mapping.get("future_covariates", []),
             "frequency_detected": self.frequency,
             "missing_value_count": int(series.isna().sum()),
             "target_mean": float(series.mean()),
@@ -625,6 +680,7 @@ class ForecastingDataLoader:
         train_loader.csv_path = self.csv_path
         train_loader.target_scaler = None
         train_loader.covariate_scaler = None
+        train_loader.future_covariate_scaler = None
 
         val_loader = ForecastingDataLoader.__new__(ForecastingDataLoader)
         val_loader.df = val_df
@@ -633,6 +689,7 @@ class ForecastingDataLoader:
         val_loader.csv_path = self.csv_path
         val_loader.target_scaler = None
         val_loader.covariate_scaler = None
+        val_loader.future_covariate_scaler = None
 
         return train_loader, val_loader
 

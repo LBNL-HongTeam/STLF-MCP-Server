@@ -15,7 +15,15 @@ class ColumnMapping(BaseModel):
     datetime: str = Field(description="Column containing timestamps")
     target: str = Field(description="Column containing load values to forecast")
     past_covariates: Optional[list[str]] = Field(
-        default=None, description="Optional weather/feature columns"
+        default=None, description="Optional weather/feature columns known only for past timesteps"
+    )
+    future_covariates: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Optional columns known for both past and future timesteps "
+            "(e.g. weather forecasts). Not auto-detected — must be listed explicitly. "
+            "Currently supported for LinearRegression only."
+        ),
     )
 
 
@@ -41,6 +49,7 @@ class DataSummary(BaseModel):
     end_date: str
     target_column: str
     covariate_columns: list[str] = Field(default_factory=list)
+    future_covariate_columns: list[str] = Field(default_factory=list)
     frequency_detected: str
     missing_value_count: int = 0
 

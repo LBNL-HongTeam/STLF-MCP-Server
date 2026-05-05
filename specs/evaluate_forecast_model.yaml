@@ -45,6 +45,7 @@ inputs:
     description: >
       Column mapping. If not provided, uses mapping stored in model metadata
       from training. Only specify if test CSV has different column names.
+      Supports: datetime, target, past_covariates (array), future_covariates (array).
 
   # --- Output Options ---
   - name: return_predictions

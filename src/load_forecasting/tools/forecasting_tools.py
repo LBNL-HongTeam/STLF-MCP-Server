@@ -119,18 +119,22 @@ async def train_forecast_model(
         train_loader, val_loader = loader.split_train_val(validation_split)
 
         # Convert to Darts TimeSeries
-        train_series, train_covariates = train_loader.to_darts_series(fit_scalers=True)
+        train_series, train_covariates, train_future_covariates = (
+            train_loader.to_darts_series(fit_scalers=True)
+        )
 
         # Copy fitted scalers to val_loader for consistent scaling
         val_loader.target_scaler = train_loader.target_scaler
         val_loader.covariate_scaler = train_loader.covariate_scaler
-        val_series, _ = val_loader.to_darts_series(fit_scalers=False)
+        val_loader.future_covariate_scaler = train_loader.future_covariate_scaler
+        val_series, _, _ = val_loader.to_darts_series(fit_scalers=False)
 
         # Get full covariates for evaluation (needed for historical_forecasts)
         # Darts needs covariates to extend beyond the target series for predictions
         loader.target_scaler = train_loader.target_scaler
         loader.covariate_scaler = train_loader.covariate_scaler
-        _, full_covariates = loader.to_darts_series(fit_scalers=False)
+        loader.future_covariate_scaler = train_loader.future_covariate_scaler
+        _, full_covariates, full_future_covariates = loader.to_darts_series(fit_scalers=False)
 
         # Update data summary with split info
         data_summary["training_samples"] = len(train_loader.df)
@@ -142,7 +146,10 @@ async def train_forecast_model(
             f"at frequency={frequency}"
         )
 
-        # Train model (pass full covariates for proper evaluation)
+        # Train model (pass full covariates for proper evaluation).
+        # We pass the full-dataset covariate series (not just train-split) so
+        # that historical_forecasts can look up covariates in the validation
+        # window without index out-of-bounds.
         model, training_metrics, validation_metrics, training_info = _train_model(
             train_series=train_series,
             val_series=val_series,
@@ -151,6 +158,8 @@ async def train_forecast_model(
             horizon=horizon_steps,
             train_covariates=full_covariates,
             val_covariates=full_covariates,
+            train_future_covariates=full_future_covariates,
+            val_future_covariates=full_future_covariates,
             scaler=train_loader.target_scaler,
             frequency=frequency,
         )
@@ -179,6 +188,7 @@ async def train_forecast_model(
             scalers={
                 "target_scaler": train_loader.target_scaler,
                 "covariate_scaler": train_loader.covariate_scaler,
+                "future_covariate_scaler": train_loader.future_covariate_scaler,
             },
         )
 
@@ -261,9 +271,13 @@ async def evaluate_forecast_model(
             loader.target_scaler = scalers["target_scaler"]
         if "covariate_scaler" in scalers:
             loader.covariate_scaler = scalers["covariate_scaler"]
+        if "future_covariate_scaler" in scalers:
+            loader.future_covariate_scaler = scalers["future_covariate_scaler"]
 
         # Convert to Darts TimeSeries (use existing scalers)
-        test_series, test_covariates = loader.to_darts_series(fit_scalers=False)
+        test_series, test_covariates, test_future_covariates = (
+            loader.to_darts_series(fit_scalers=False)
+        )
 
         # Convert hours to time steps based on data frequency
         lookback_steps = hours_to_steps(lookback, frequency)
@@ -273,14 +287,15 @@ async def evaluate_forecast_model(
         from ..core.trainer import _generate_predictions
 
         predictions = _generate_predictions(
-            model, test_series, test_covariates, lookback_steps, horizon_steps
+            model, test_series, test_covariates, lookback_steps, horizon_steps,
+            future_covariates=test_future_covariates,
         )
 
         # Calculate metrics
         from ..core.evaluator import calculate_metrics
 
         test_metrics = calculate_metrics(
-            test_series.slice_n_points_after(start=lookback_steps),
+            test_series[lookback_steps:],
             predictions,
             scaler=loader.target_scaler,
         )
@@ -312,11 +327,11 @@ async def evaluate_forecast_model(
             if loader.target_scaler:
                 pred_original = loader.target_scaler.inverse_transform(predictions)
                 actual_original = loader.target_scaler.inverse_transform(
-                    test_series.slice_n_points_after(start=lookback_steps)
+                    test_series[lookback_steps:]
                 )
             else:
                 pred_original = predictions
-                actual_original = test_series.slice_n_points_after(start=lookback_steps)
+                actual_original = test_series[lookback_steps:]
 
             # Build predictions list
             pred_list = []
@@ -338,7 +353,7 @@ async def evaluate_forecast_model(
         # Include residual analysis if requested
         if include_residual_analysis:
             residual_analysis = calculate_residual_analysis(
-                test_series.slice_n_points_after(start=lookback),
+                test_series[lookback_steps:],
                 predictions,
                 scaler=loader.target_scaler,
             )
@@ -483,6 +498,7 @@ async def inspect_data(
             dt_col = resolved_mapping.get("datetime")
             target_col = resolved_mapping.get("target")
             cov_cols = resolved_mapping.get("past_covariates", [])
+            fut_cov_cols = resolved_mapping.get("future_covariates", [])
             inferred_freq = _infer_frequency(loader.df.index)
             actual_frequency = inferred_freq or detected_frequency or "unknown"
         else:
@@ -491,15 +507,18 @@ async def inspect_data(
             dt_col = resolved_mapping.get("datetime")
             target_col = resolved_mapping.get("target")
             cov_cols = resolved_mapping.get("past_covariates", [])
+            fut_cov_cols = resolved_mapping.get("future_covariates", [])
             actual_frequency = detected_frequency or "unknown"
 
+        all_mapped = [dt_col, target_col] + cov_cols + fut_cov_cols
         column_report = {
             "datetime": dt_col,
             "target": target_col,
             "past_covariates": cov_cols,
+            "future_covariates": fut_cov_cols,
             "unrecognised": [
                 c for c in columns_in_file
-                if c not in ([dt_col, target_col] + cov_cols)
+                if c not in all_mapped
             ],
             "all_columns": columns_in_file,
         }
@@ -555,9 +574,14 @@ async def inspect_data(
         work_df = loader.df if loader is not None else raw_df
         raw_df_indexed = raw_df.set_index(raw_df.columns[0]) if loader is not None else raw_df
 
-        for col in ([target_col] + cov_cols) if (target_col and cov_cols) else (
-            [target_col] if target_col else []
-        ) + cov_cols:
+        # Build the list of columns to report stats for
+        _stat_cols: list = []
+        if target_col:
+            _stat_cols.append(target_col)
+        _stat_cols.extend(cov_cols)
+        _stat_cols.extend(fut_cov_cols)
+
+        for col in _stat_cols:
             if col not in work_df.columns:
                 continue
             s = work_df[col]
@@ -566,9 +590,14 @@ async def inspect_data(
             n_null = int(raw_col.isna().sum())
             n_total_raw = len(raw_col)
             non_null = s.dropna()
+            _role = (
+                "target" if col == target_col
+                else "future_covariate" if col in fut_cov_cols
+                else "past_covariate"
+            )
             stat: dict = {
                 "column": col,
-                "role": "target" if col == target_col else "past_covariate",
+                "role": _role,
                 "n_total": n_total_raw,
                 "n_missing": n_null,
                 "coverage_pct": round(100.0 * (n_total_raw - n_null) / max(n_total_raw, 1), 2),
@@ -761,13 +790,15 @@ def _sniff_columns(raw_df: pd.DataFrame, mapping: Optional[dict]) -> dict:
         result = dict(mapping)
         if "past_covariates" not in result:
             result["past_covariates"] = []
+        if "future_covariates" not in result:
+            result["future_covariates"] = []
         return result
 
     dt_patterns = ["datetime", "timestamp", "date", "time", "dt"]
     target_patterns = ["kwh", "load", "power", "energy", "electricity", "demand"]
     cov_patterns = ["temp", "temperature", "rh", "humidity", "solar", "wind"]
 
-    result: dict = {"past_covariates": []}
+    result: dict = {"past_covariates": [], "future_covariates": []}
     for col in raw_df.columns:
         cl = col.lower()
         if "datetime" not in result and any(p in cl for p in dt_patterns):

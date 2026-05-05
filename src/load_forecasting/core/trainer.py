@@ -53,8 +53,11 @@ def create_model(
     model_type: str,
     lookback: int = 24,
     horizon: int = 6,
-    use_covariates: bool = False,
+    use_past_covariates: bool = False,
+    use_future_covariates: bool = False,
     frequency: str = "h",
+    # Legacy alias kept for backwards compatibility
+    use_covariates: bool = False,
 ) -> Any:
     """
     Create a model instance.
@@ -63,8 +66,10 @@ def create_model(
         model_type: Type of model to create
         lookback: Input window size in TIME STEPS (not hours)
         horizon: Output horizon in TIME STEPS (not hours)
-        use_covariates: Whether past covariates will be used
+        use_past_covariates: Whether past covariates will be used
+        use_future_covariates: Whether future covariates will be used
         frequency: Data frequency for NaiveSeasonal seasonality
+        use_covariates: Deprecated alias for use_past_covariates
 
     Returns:
         Instantiated model
@@ -72,6 +77,9 @@ def create_model(
     Raises:
         ValueError: If model_type is unknown
     """
+    # Handle legacy alias
+    use_past_covariates = use_past_covariates or use_covariates
+
     if model_type not in MODEL_CLASSES:
         raise ValueError(
             f"Unknown model type: {model_type}. "
@@ -79,10 +87,13 @@ def create_model(
         )
 
     if model_type == "LinearRegression":
-        # Configure lags_past_covariates if covariates are used
+        # lags_future_covariates: cover current step through the full horizon
+        # so the model sees the future covariate at every predicted timestep.
+        lags_future = list(range(0, horizon)) if use_future_covariates else None
         model = RegressionModel(
             lags=lookback,
-            lags_past_covariates=lookback if use_covariates else None,
+            lags_past_covariates=lookback if use_past_covariates else None,
+            lags_future_covariates=lags_future,
             output_chunk_length=horizon,
             model=LinearRegression(),
         )
@@ -108,6 +119,8 @@ def train_model(
     horizon: int = 6,
     train_covariates: Optional[TimeSeries] = None,
     val_covariates: Optional[TimeSeries] = None,
+    train_future_covariates: Optional[TimeSeries] = None,
+    val_future_covariates: Optional[TimeSeries] = None,
     scaler=None,
     frequency: str = "h",
 ) -> tuple[Any, dict, dict, dict]:
@@ -120,8 +133,11 @@ def train_model(
         model_type: Type of model to train
         lookback: Input window size in TIME STEPS (not hours)
         horizon: Forecast horizon in TIME STEPS (not hours)
-        train_covariates: Training covariates (optional)
-        val_covariates: Validation covariates (optional)
+        train_covariates: Training past covariates (optional)
+        val_covariates: Validation past covariates (optional)
+        train_future_covariates: Training future covariates (optional).
+            Must cover at least the training period plus the forecast horizon.
+        val_future_covariates: Validation future covariates (optional).
         scaler: Scaler for inverse transform when computing metrics
         frequency: Data frequency for seasonality calculation
 
@@ -131,23 +147,30 @@ def train_model(
     start_time = time.time()
 
     # Create model
-    use_covariates = train_covariates is not None
+    use_past_covariates = train_covariates is not None
+    use_future_covariates = train_future_covariates is not None
     model = create_model(
         model_type, lookback, horizon,
-        use_covariates=use_covariates,
-        frequency=frequency
+        use_past_covariates=use_past_covariates,
+        use_future_covariates=use_future_covariates,
+        frequency=frequency,
     )
     logger.info(
         f"Created {model_type} model with lookback={lookback}, "
-        f"horizon={horizon}, covariates={use_covariates}"
+        f"horizon={horizon}, past_covariates={use_past_covariates}, "
+        f"future_covariates={use_future_covariates}"
     )
 
     # Train model
     try:
         if hasattr(model, "fit"):
-            if (train_covariates is not None and
-                    model_type == "LinearRegression"):
-                model.fit(train_series, past_covariates=train_covariates)
+            if model_type == "LinearRegression":
+                fit_kwargs: dict = {}
+                if train_covariates is not None:
+                    fit_kwargs["past_covariates"] = train_covariates
+                if train_future_covariates is not None:
+                    fit_kwargs["future_covariates"] = train_future_covariates
+                model.fit(train_series, **fit_kwargs)
             else:
                 model.fit(train_series)
             logger.info("Model training completed")
@@ -160,7 +183,8 @@ def train_model(
     # Evaluate on training data
     try:
         train_pred = _generate_predictions(
-            model, train_series, train_covariates, lookback, horizon
+            model, train_series, train_covariates, lookback, horizon,
+            future_covariates=train_future_covariates,
         )
         training_metrics = calculate_metrics(
             train_series[lookback:],
@@ -177,7 +201,8 @@ def train_model(
     # Evaluate on validation data
     try:
         val_pred = _generate_predictions(
-            model, val_series, val_covariates, lookback, horizon
+            model, val_series, val_covariates, lookback, horizon,
+            future_covariates=val_future_covariates,
         )
         validation_metrics = calculate_metrics(
             val_series[lookback:],
@@ -208,6 +233,7 @@ def _generate_predictions(
     covariates: Optional[TimeSeries],
     lookback: int,
     horizon: int,
+    future_covariates: Optional[TimeSeries] = None,
 ) -> TimeSeries:
     """
     Generate predictions using historical_forecasts.
@@ -215,9 +241,11 @@ def _generate_predictions(
     Args:
         model: Trained model
         series: Input series
-        covariates: Optional covariates
+        covariates: Optional past covariates
         lookback: Lookback window
         horizon: Forecast horizon
+        future_covariates: Optional future covariates (columns known at
+            forecast time, e.g. weather forecasts).
 
     Returns:
         Concatenated predictions as TimeSeries
@@ -240,25 +268,19 @@ def _generate_predictions(
     start = lookback
 
     try:
+        hf_kwargs: dict = {
+            "start": start,
+            "forecast_horizon": horizon,
+            "stride": horizon,
+            "retrain": False,
+            "verbose": False,
+        }
         if covariates is not None and hasattr(model, "past_covariates"):
-            predictions = model.historical_forecasts(
-                series,
-                past_covariates=covariates,
-                start=start,
-                forecast_horizon=horizon,
-                stride=horizon,
-                retrain=False,
-                verbose=False,
-            )
-        else:
-            predictions = model.historical_forecasts(
-                series,
-                start=start,
-                forecast_horizon=horizon,
-                stride=horizon,
-                retrain=False,
-                verbose=False,
-            )
+            hf_kwargs["past_covariates"] = covariates
+        if future_covariates is not None and hasattr(model, "future_covariates"):
+            hf_kwargs["future_covariates"] = future_covariates
+
+        predictions = model.historical_forecasts(series, **hf_kwargs)
     except Exception as e:
         logger.warning(f"historical_forecasts failed: {e}")
         raise
@@ -329,6 +351,7 @@ def evaluate_model(
     model: Any,
     test_series: TimeSeries,
     test_covariates: Optional[TimeSeries] = None,
+    test_future_covariates: Optional[TimeSeries] = None,
     lookback: int = 24,
     horizon: int = 6,
     scaler=None,
@@ -339,7 +362,8 @@ def evaluate_model(
     Args:
         model: Trained model
         test_series: Test time series
-        test_covariates: Test covariates (optional)
+        test_covariates: Test past covariates (optional)
+        test_future_covariates: Test future covariates (optional)
         lookback: Lookback window
         horizon: Forecast horizon
         scaler: Scaler for inverse transform
@@ -348,7 +372,8 @@ def evaluate_model(
         Tuple of (metrics_dict, predictions_series)
     """
     predictions = _generate_predictions(
-        model, test_series, test_covariates, lookback, horizon
+        model, test_series, test_covariates, lookback, horizon,
+        future_covariates=test_future_covariates,
     )
 
     metrics = calculate_metrics(

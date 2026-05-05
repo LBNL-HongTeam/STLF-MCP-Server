@@ -201,6 +201,10 @@ class ModelRegistry:
                 with open(scalers_dir / "covariate_scaler.pkl", "wb") as f:
                     pickle.dump(scalers["covariate_scaler"], f)
 
+            if "future_covariate_scaler" in scalers and scalers["future_covariate_scaler"] is not None:
+                with open(scalers_dir / "future_covariate_scaler.pkl", "wb") as f:
+                    pickle.dump(scalers["future_covariate_scaler"], f)
+
         # Update registry index
         self._update_registry(model_id, model_type, building_name, validation_metrics, config)
 
@@ -306,6 +310,11 @@ class ModelRegistry:
             if covariate_scaler_path.exists():
                 with open(covariate_scaler_path, "rb") as f:
                     scalers["covariate_scaler"] = pickle.load(f)
+
+            future_covariate_scaler_path = scalers_dir / "future_covariate_scaler.pkl"
+            if future_covariate_scaler_path.exists():
+                with open(future_covariate_scaler_path, "rb") as f:
+                    scalers["future_covariate_scaler"] = pickle.load(f)
 
         logger.info(f"Model loaded: {model_id}")
         return model, metadata, scalers
