@@ -1,0 +1,202 @@
+# Inspect Data Specification
+# For AlphaBuilding-Agents SpecRegistry and AI discovery
+
+id: forecasting.inspect_data
+version: "1.0.0"
+mcp_server: load_forecasting
+mcp_tool: inspect_data
+
+category: data_diagnostics
+tags: [load_forecasting, data_quality, eda, preprocessing, time_series]
+description: >
+  Inspect a CSV file before training. Detects column roles, infers data
+  frequency, computes per-column statistics, identifies gaps and anomalies,
+  and returns actionable feature suggestions and a ready_to_train flag.
+  Run this before train_forecast_model to catch problems early.
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+inputs:
+  - name: csv_path
+    type: string
+    required: true
+    description: >
+      Path to the CSV file to inspect. The file does not need to be clean —
+      the tool reports what it finds, including problems.
+    example: "/data/building_33_hourly.csv"
+
+  - name: column_mapping
+    type: object
+    required: false
+    description: >
+      Optional explicit column role assignments. If not provided, columns are
+      auto-detected from names using keyword patterns.
+    properties:
+      datetime:
+        type: string
+        description: Column containing timestamps
+        auto_detect_patterns: ["datetime", "timestamp", "date", "time", "dt"]
+      target:
+        type: string
+        description: Column containing load values to forecast
+        auto_detect_patterns: ["kwh", "load", "power", "energy", "electricity", "demand"]
+      past_covariates:
+        type: array
+        items: { type: string }
+        description: Optional weather/feature columns
+        auto_detect_patterns: ["temp", "temperature", "rh", "humidity", "solar", "wind"]
+
+  - name: frequency
+    type: string
+    required: false
+    enum: ["15min", "30min", "h"]
+    description: >
+      Expected data frequency. If omitted, the tool infers it from the
+      timestamps and reports whether it matches any supported frequency.
+
+# ==============================================================================
+# OUTPUTS
+# ==============================================================================
+outputs:
+  success:
+    type: boolean
+    description: Whether inspection completed without a fatal error
+
+  error:
+    type: string
+    description: Error message if success=false
+
+  file_path:
+    type: string
+    description: Echoed back for reference
+
+  n_rows_raw:
+    type: integer
+    description: Number of rows in the raw CSV before any processing
+
+  columns:
+    type: object
+    description: Detected column roles
+    properties:
+      datetime: { type: string, description: Detected datetime column }
+      target: { type: string, description: Detected target column }
+      past_covariates:
+        type: array
+        items: { type: string }
+        description: Detected covariate columns
+      unrecognised:
+        type: array
+        items: { type: string }
+        description: Columns not mapped to any role
+      all_columns:
+        type: array
+        items: { type: string }
+        description: All columns present in the CSV
+
+  frequency:
+    type: object
+    description: Frequency detection and validation
+    properties:
+      declared: { type: string, description: Value passed by caller (null if omitted) }
+      inferred: { type: string, description: Frequency inferred from timestamps }
+      match: { type: boolean, description: Whether declared and inferred match }
+      supported: { type: boolean, description: Whether inferred frequency is supported }
+      recommendation: { type: string, description: Present only if mismatch detected }
+
+  time_range:
+    type: object
+    description: Date range and row count summary
+    properties:
+      start: { type: string, format: datetime }
+      end: { type: string, format: datetime }
+      n_rows_raw: { type: integer }
+      n_rows_after_dedup: { type: integer }
+      n_duplicates_removed: { type: integer }
+      expected_rows_at_frequency: { type: integer }
+      coverage_pct: { type: number, units: "%" }
+
+  column_statistics:
+    type: array
+    description: Per-column descriptive statistics
+    items:
+      type: object
+      properties:
+        column: { type: string }
+        role: { type: string, enum: [target, past_covariate] }
+        n_total: { type: integer }
+        n_missing: { type: integer }
+        coverage_pct: { type: number, units: "%" }
+        dtype: { type: string }
+        mean: { type: number }
+        std: { type: number }
+        min: { type: number }
+        max: { type: number }
+        p5: { type: number, description: 5th percentile }
+        p95: { type: number, description: 95th percentile }
+        n_negative: { type: integer }
+        n_zero: { type: integer }
+
+  gaps:
+    type: object
+    description: Gap analysis in the time series index
+    properties:
+      analysis_available: { type: boolean }
+      n_gaps: { type: integer, description: Number of gaps larger than 1.5x expected step }
+      total_missing_steps: { type: integer }
+      largest_gap: { type: string, description: Duration string of the largest gap }
+      largest_gap_start: { type: string, format: datetime }
+      top_gaps:
+        type: array
+        description: Up to 5 largest gaps
+        items:
+          type: object
+          properties:
+            start: { type: string, format: datetime }
+            duration: { type: string }
+            missing_steps: { type: integer }
+
+  quality_flags:
+    type: array
+    items: { type: string }
+    description: >
+      List of data quality warnings and errors. Each entry is prefixed with
+      a flag type (e.g. LOAD_ERROR, GAPS, MISSING_VALUES, NEGATIVE_TARGET,
+      FREQUENCY_MISMATCH, DUPLICATES, LOW_COVERAGE).
+
+  suggestions:
+    type: array
+    items: { type: string }
+    description: Actionable recommendations for improving data quality or model performance
+
+  ready_to_train:
+    type: boolean
+    description: >
+      True if no blocking issues were found and the file can be used with
+      train_forecast_model without further fixes.
+
+  blocking_issues:
+    type: array
+    items: { type: string }
+    description: >
+      Subset of quality_flags that are blocking (LOAD_ERROR,
+      UNSUPPORTED_FREQUENCY). Must be empty for ready_to_train to be true.
+
+  loader_error:
+    type: string
+    description: >
+      Full error message from the data loader if it could not initialise.
+      Null if loading succeeded.
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+notes:
+  - "Run inspect_data before train_forecast_model to catch problems early"
+  - "ready_to_train=true means the file can be passed directly to train_forecast_model"
+  - "quality_flags entries prefixed with LOAD_ERROR or UNSUPPORTED_FREQUENCY are blocking"
+  - "Gaps up to 2h are auto-interpolated during training; larger gaps will remain as NaN"
+  - "Calendar (hour, dow, month, is_weekend, sin/cos) and lag (24h/48h/168h) features
+     are injected automatically by the loader — they appear in suggestions for transparency"
+  - "The tool reads the file twice: once raw (for column listing) and once via the
+     full loader pipeline (for datetime parsing, dedup, and gap analysis)"

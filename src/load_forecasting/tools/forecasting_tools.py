@@ -7,7 +7,10 @@ These functions are wrapped and registered in server.py.
 from typing import Optional
 import logging
 
-from ..core.data_loader import ForecastingDataLoader, DataLoadError
+import numpy as np
+import pandas as pd
+
+from ..core.data_loader import ForecastingDataLoader, DataLoadError, _infer_frequency
 from ..core.trainer import train_model as _train_model, get_available_models
 from ..core.evaluator import calculate_residual_analysis, compare_to_validation
 from ..core.model_registry import (
@@ -15,7 +18,7 @@ from ..core.model_registry import (
     ModelNotFoundError,
     ModelCorruptedError,
 )
-from ..core.frequency_utils import hours_to_steps
+from ..core.frequency_utils import hours_to_steps, FREQ_TO_STEPS_PER_HOUR
 
 logger = logging.getLogger(__name__)
 
@@ -398,3 +401,379 @@ async def list_models(
     except Exception as e:
         logger.exception("List models failed")
         return create_error_response(f"Failed to list models: {str(e)}")
+
+
+async def inspect_data(
+    csv_path: str,
+    column_mapping: Optional[dict] = None,
+    frequency: Optional[str] = None,
+) -> dict:
+    """
+    Inspect a CSV file and report everything an agent needs before training.
+
+    Reads the file, auto-detects or validates column roles, infers the data
+    frequency, computes per-column statistics, identifies gaps and anomalies,
+    and returns actionable feature suggestions.
+
+    Args:
+        csv_path: Path to CSV file to inspect.
+        column_mapping: Optional explicit column roles (datetime, target,
+            past_covariates).  Auto-detected if not provided.
+        frequency: Expected data frequency ('15min', '30min', 'h').  If
+            omitted, the tool infers it from the timestamps.
+
+    Returns:
+        Dict with detected columns, frequency, statistics, gap analysis,
+        quality flags, and feature suggestions.
+    """
+    try:
+        from pathlib import Path
+
+        path = Path(csv_path)
+        if not path.exists():
+            return create_error_response(
+                f"File not found: {csv_path}\n"
+                "Check that the path is correct and the file is accessible."
+            )
+
+        # ------------------------------------------------------------------
+        # Read raw CSV (no preprocessing yet — we want the raw picture)
+        # ------------------------------------------------------------------
+        try:
+            raw_df = pd.read_csv(csv_path)
+        except Exception as e:
+            return create_error_response(f"Failed to read CSV: {e}")
+
+        if raw_df.empty:
+            return create_error_response("CSV file is empty.")
+
+        n_rows_raw = len(raw_df)
+        columns_in_file = raw_df.columns.tolist()
+
+        # ------------------------------------------------------------------
+        # Run the data loader (auto-detect columns, parse datetimes, dedup)
+        # Use add_calendar_features=False / lag_hours=[] so we inspect only
+        # what the user actually has in their file.
+        # ------------------------------------------------------------------
+        detected_frequency = frequency
+        loader_error: Optional[str] = None
+        loader: Optional[ForecastingDataLoader] = None
+
+        # Determine frequency to pass to loader
+        if detected_frequency is None:
+            # Sniff from raw datetime column without full loader initialisation
+            detected_frequency = _sniff_frequency(raw_df)
+
+        try:
+            loader = ForecastingDataLoader(
+                csv_path=csv_path,
+                column_mapping=column_mapping,
+                frequency=detected_frequency or "h",
+                add_calendar_features=False,
+                lag_hours=[],
+            )
+        except DataLoadError as e:
+            loader_error = str(e)
+
+        # ------------------------------------------------------------------
+        # Column detection report
+        # ------------------------------------------------------------------
+        if loader is not None:
+            resolved_mapping = loader.column_mapping
+            dt_col = resolved_mapping.get("datetime")
+            target_col = resolved_mapping.get("target")
+            cov_cols = resolved_mapping.get("past_covariates", [])
+            inferred_freq = _infer_frequency(loader.df.index)
+            actual_frequency = inferred_freq or detected_frequency or "unknown"
+        else:
+            # Loader failed — do best-effort column sniffing from raw df
+            resolved_mapping = _sniff_columns(raw_df, column_mapping)
+            dt_col = resolved_mapping.get("datetime")
+            target_col = resolved_mapping.get("target")
+            cov_cols = resolved_mapping.get("past_covariates", [])
+            actual_frequency = detected_frequency or "unknown"
+
+        column_report = {
+            "datetime": dt_col,
+            "target": target_col,
+            "past_covariates": cov_cols,
+            "unrecognised": [
+                c for c in columns_in_file
+                if c not in ([dt_col, target_col] + cov_cols)
+            ],
+            "all_columns": columns_in_file,
+        }
+
+        # ------------------------------------------------------------------
+        # Frequency report
+        # ------------------------------------------------------------------
+        freq_report = {
+            "declared": frequency,
+            "inferred": actual_frequency,
+            "match": (frequency is None) or (actual_frequency == frequency),
+            "supported": actual_frequency in FREQ_TO_STEPS_PER_HOUR,
+        }
+        if not freq_report["match"]:
+            freq_report["recommendation"] = (
+                f"Set frequency='{actual_frequency}' to match the data."
+            )
+
+        # ------------------------------------------------------------------
+        # Row / time range summary
+        # ------------------------------------------------------------------
+        time_range: dict = {}
+        n_rows_clean = n_rows_raw
+        if loader is not None:
+            n_rows_clean = len(loader.df)
+            time_range = {
+                "start": loader.df.index.min().isoformat(),
+                "end": loader.df.index.max().isoformat(),
+                "n_rows_raw": n_rows_raw,
+                "n_rows_after_dedup": n_rows_clean,
+                "n_duplicates_removed": n_rows_raw - n_rows_clean,
+            }
+            # Expected row count at detected frequency
+            if actual_frequency in FREQ_TO_STEPS_PER_HOUR:
+                steps_per_hour = FREQ_TO_STEPS_PER_HOUR[actual_frequency]
+                duration_hours = (
+                    loader.df.index.max() - loader.df.index.min()
+                ).total_seconds() / 3600
+                expected_rows = int(duration_hours * steps_per_hour) + 1
+                time_range["expected_rows_at_frequency"] = expected_rows
+                time_range["coverage_pct"] = round(
+                    100.0 * n_rows_clean / max(expected_rows, 1), 2
+                )
+
+        # ------------------------------------------------------------------
+        # Per-column statistics
+        # We use raw_df for missing-value counts (pre-interpolation) so that
+        # the report reflects what the user actually has in their file.
+        # For numeric stats (mean, std, …) we use the cleaned loader.df when
+        # available, falling back to raw_df otherwise.
+        # ------------------------------------------------------------------
+        column_stats: list[dict] = []
+        work_df = loader.df if loader is not None else raw_df
+        raw_df_indexed = raw_df.set_index(raw_df.columns[0]) if loader is not None else raw_df
+
+        for col in ([target_col] + cov_cols) if (target_col and cov_cols) else (
+            [target_col] if target_col else []
+        ) + cov_cols:
+            if col not in work_df.columns:
+                continue
+            s = work_df[col]
+            # Count nulls from raw data (pre-interpolation) when possible
+            raw_col = raw_df[col] if col in raw_df.columns else s
+            n_null = int(raw_col.isna().sum())
+            n_total_raw = len(raw_col)
+            non_null = s.dropna()
+            stat: dict = {
+                "column": col,
+                "role": "target" if col == target_col else "past_covariate",
+                "n_total": n_total_raw,
+                "n_missing": n_null,
+                "coverage_pct": round(100.0 * (n_total_raw - n_null) / max(n_total_raw, 1), 2),
+                "dtype": str(s.dtype),
+            }
+            if pd.api.types.is_numeric_dtype(s) and len(non_null) > 0:
+                stat.update({
+                    "mean": round(float(non_null.mean()), 4),
+                    "std": round(float(non_null.std()), 4),
+                    "min": round(float(non_null.min()), 4),
+                    "max": round(float(non_null.max()), 4),
+                    "p5": round(float(np.percentile(non_null, 5)), 4),
+                    "p95": round(float(np.percentile(non_null, 95)), 4),
+                    "n_negative": int((non_null < 0).sum()),
+                    "n_zero": int((non_null == 0).sum()),
+                })
+            column_stats.append(stat)
+
+        # ------------------------------------------------------------------
+        # Gap analysis (only possible when loader succeeded)
+        # ------------------------------------------------------------------
+        gap_report: dict = {"analysis_available": loader is not None}
+        if loader is not None and actual_frequency in FREQ_TO_STEPS_PER_HOUR:
+            expected_td = pd.Timedelta(hours=1) / FREQ_TO_STEPS_PER_HOUR[actual_frequency]
+            diffs = loader.df.index.to_series().diff().dropna()
+            gaps = diffs[diffs > expected_td * 1.5]  # 50% tolerance
+            gap_report["n_gaps"] = len(gaps)
+            gap_report["total_missing_steps"] = int(
+                sum((g / expected_td) - 1 for g in gaps)
+            )
+            if len(gaps) > 0:
+                largest = gaps.max()
+                gap_report["largest_gap"] = str(largest)
+                gap_report["largest_gap_start"] = gaps.idxmax().isoformat()
+                gap_list = []
+                for ts, dur in gaps.sort_values(ascending=False).head(5).items():
+                    gap_list.append({
+                        "start": ts.isoformat(),
+                        "duration": str(dur),
+                        "missing_steps": int(dur / expected_td) - 1,
+                    })
+                gap_report["top_gaps"] = gap_list
+
+        # ------------------------------------------------------------------
+        # Quality flags
+        # ------------------------------------------------------------------
+        quality_flags: list[str] = []
+        if loader_error:
+            quality_flags.append(f"LOAD_ERROR: {loader_error}")
+        if not freq_report["match"]:
+            quality_flags.append(
+                f"FREQUENCY_MISMATCH: declared={frequency}, "
+                f"inferred={actual_frequency}"
+            )
+        if not freq_report["supported"]:
+            quality_flags.append(
+                f"UNSUPPORTED_FREQUENCY: '{actual_frequency}' — "
+                "use 15min, 30min, or h"
+            )
+        if time_range.get("n_duplicates_removed", 0) > 0:
+            quality_flags.append(
+                f"DUPLICATES: {time_range['n_duplicates_removed']} "
+                "duplicate timestamps removed"
+            )
+        if time_range.get("coverage_pct", 100) < 90:
+            quality_flags.append(
+                f"LOW_COVERAGE: {time_range.get('coverage_pct')}% row coverage "
+                f"(< 90% threshold)"
+            )
+        if gap_report.get("n_gaps", 0) > 0:
+            quality_flags.append(
+                f"GAPS: {gap_report['n_gaps']} gap(s) totalling "
+                f"{gap_report.get('total_missing_steps', '?')} missing steps"
+            )
+        for stat in column_stats:
+            if stat.get("n_missing", 0) > 0:
+                quality_flags.append(
+                    f"MISSING_VALUES: column '{stat['column']}' has "
+                    f"{stat['n_missing']} null(s) ({100 - stat['coverage_pct']:.1f}%)"
+                )
+            if stat.get("n_negative", 0) > 0 and stat["role"] == "target":
+                quality_flags.append(
+                    f"NEGATIVE_TARGET: column '{stat['column']}' has "
+                    f"{stat['n_negative']} negative value(s)"
+                )
+
+        # ------------------------------------------------------------------
+        # Feature suggestions
+        # ------------------------------------------------------------------
+        suggestions: list[str] = []
+        if target_col:
+            suggestions.append(
+                "Calendar features (hour, day-of-week, month, is_weekend, "
+                "hour_sin/cos) are auto-added by the data loader — no action needed."
+            )
+            suggestions.append(
+                "Lag features at 24h, 48h, and 168h are auto-added by the "
+                "data loader — no action needed."
+            )
+        if not cov_cols:
+            suggestions.append(
+                "No weather/covariate columns detected. Adding outdoor "
+                "temperature (column name containing 'temp' or 'temperature') "
+                "typically improves accuracy."
+            )
+        if column_report["unrecognised"]:
+            suggestions.append(
+                f"Columns {column_report['unrecognised']} were not mapped to "
+                "any role. If they contain useful signals, pass them explicitly "
+                "via column_mapping={'past_covariates': [...]}."
+            )
+        if time_range.get("coverage_pct", 100) < 95:
+            suggestions.append(
+                "Coverage is below 95%. Gaps up to 2h are interpolated "
+                "automatically; larger gaps will remain as NaN and may hurt "
+                "model accuracy."
+            )
+        if loader is not None and n_rows_clean < 500:
+            suggestions.append(
+                f"Only {n_rows_clean} rows after deduplication. At least ~500 "
+                "rows (ideally 3+ months) are recommended for reliable training."
+            )
+        if target_col and loader is not None:
+            # Check if data is long enough for default lookback/horizon
+            min_needed = hours_to_steps(24, actual_frequency if actual_frequency in FREQ_TO_STEPS_PER_HOUR else "h") + \
+                         hours_to_steps(6, actual_frequency if actual_frequency in FREQ_TO_STEPS_PER_HOUR else "h") + 100
+            if n_rows_clean < min_needed:
+                suggestions.append(
+                    f"Data has {n_rows_clean} rows, which may be insufficient "
+                    f"for default parameters (lookback=24h, horizon=6h). "
+                    f"Minimum recommended: {min_needed} rows."
+                )
+            else:
+                suggestions.append(
+                    f"Data length ({n_rows_clean} rows) is sufficient for "
+                    "training with default parameters."
+                )
+
+        # ------------------------------------------------------------------
+        # Readiness verdict
+        # ------------------------------------------------------------------
+        blocking = [f for f in quality_flags if f.startswith(("LOAD_ERROR", "UNSUPPORTED_FREQUENCY"))]
+        ready_to_train = loader_error is None and freq_report["supported"] and bool(target_col)
+
+        return create_success_response(
+            file_path=csv_path,
+            n_rows_raw=n_rows_raw,
+            columns=column_report,
+            frequency=freq_report,
+            time_range=time_range,
+            column_statistics=column_stats,
+            gaps=gap_report,
+            quality_flags=quality_flags,
+            suggestions=suggestions,
+            ready_to_train=ready_to_train,
+            blocking_issues=blocking,
+            loader_error=loader_error,
+        )
+
+    except Exception as e:
+        logger.exception("inspect_data failed")
+        return create_error_response(f"Inspection failed: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Private helpers for inspect_data
+# ---------------------------------------------------------------------------
+
+def _sniff_frequency(raw_df: pd.DataFrame) -> Optional[str]:
+    """
+    Attempt to infer frequency from the first column that parses as datetimes.
+    Returns a frequency string or None.
+    """
+    for col in raw_df.columns:
+        try:
+            parsed = pd.to_datetime(raw_df[col], utc=True)
+            idx = pd.DatetimeIndex(parsed)
+            return _infer_frequency(idx)
+        except Exception:
+            continue
+    return None
+
+
+def _sniff_columns(raw_df: pd.DataFrame, mapping: Optional[dict]) -> dict:
+    """
+    Best-effort column role detection without running the full loader.
+    Used as fallback when ForecastingDataLoader.__init__ fails.
+    """
+    if mapping:
+        result = dict(mapping)
+        if "past_covariates" not in result:
+            result["past_covariates"] = []
+        return result
+
+    dt_patterns = ["datetime", "timestamp", "date", "time", "dt"]
+    target_patterns = ["kwh", "load", "power", "energy", "electricity", "demand"]
+    cov_patterns = ["temp", "temperature", "rh", "humidity", "solar", "wind"]
+
+    result: dict = {"past_covariates": []}
+    for col in raw_df.columns:
+        cl = col.lower()
+        if "datetime" not in result and any(p in cl for p in dt_patterns):
+            result["datetime"] = col
+        elif "target" not in result and any(p in cl for p in target_patterns):
+            result["target"] = col
+        elif any(p in cl for p in cov_patterns):
+            result["past_covariates"].append(col)
+    return result

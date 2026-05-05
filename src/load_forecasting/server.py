@@ -14,6 +14,7 @@ from .tools.forecasting_tools import (
     train_forecast_model,
     evaluate_forecast_model,
     list_models,
+    inspect_data,
 )
 
 # Configure logging
@@ -135,6 +136,37 @@ async def _list_models(
         model_type=model_type,
         sort_by=sort_by,
         limit=limit,
+    )
+
+
+@mcp.tool(name="inspect_data")
+async def _inspect_data(
+    csv_path: str,
+    column_mapping: dict | None = None,
+    frequency: str | None = None,
+) -> dict:
+    """
+    Inspect a CSV file before training — detect columns, frequency, gaps,
+    statistics, quality issues, and feature suggestions.
+
+    Run this before train_forecast_model to understand the data and catch
+    problems early.
+
+    Args:
+        csv_path: Path to CSV file to inspect
+        column_mapping: Optional explicit column roles (datetime, target,
+            past_covariates). Auto-detected if not provided.
+        frequency: Expected data frequency ('15min', '30min', 'h').
+            Inferred from timestamps if not provided.
+
+    Returns:
+        Dict with detected columns, frequency, statistics, gap analysis,
+        quality flags, feature suggestions, and a ready_to_train flag.
+    """
+    return await inspect_data(
+        csv_path=csv_path,
+        column_mapping=column_mapping,
+        frequency=frequency,
     )
 
 
