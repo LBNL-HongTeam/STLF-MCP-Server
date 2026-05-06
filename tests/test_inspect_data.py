@@ -68,33 +68,18 @@ def _make_csv(
 class TestInspectDataBasic:
 
     @pytest.mark.asyncio
-    async def test_returns_success(self):
+    async def test_clean_file_response(self):
+        """success, all top-level keys, and ready_to_train on a clean CSV."""
         path = _make_csv()
         try:
             result = await inspect_data(csv_path=path)
             assert result["success"] is True
-        finally:
-            Path(path).unlink(missing_ok=True)
-
-    @pytest.mark.asyncio
-    async def test_top_level_keys_present(self):
-        path = _make_csv()
-        try:
-            result = await inspect_data(csv_path=path)
             for key in (
                 "columns", "frequency", "time_range", "column_statistics",
                 "gaps", "quality_flags", "suggestions",
                 "ready_to_train", "blocking_issues", "loader_error",
             ):
                 assert key in result, f"Missing key: {key}"
-        finally:
-            Path(path).unlink(missing_ok=True)
-
-    @pytest.mark.asyncio
-    async def test_ready_to_train_clean_file(self):
-        path = _make_csv()
-        try:
-            result = await inspect_data(csv_path=path)
             assert result["ready_to_train"] is True
             assert result["blocking_issues"] == []
         finally:
@@ -217,23 +202,14 @@ class TestFrequencyDetection:
 class TestColumnStatistics:
 
     @pytest.mark.asyncio
-    async def test_target_stats_present(self):
-        path = _make_csv()
+    async def test_target_and_covariate_stats_present(self):
+        path = _make_csv(add_temp=True)
         try:
             result = await inspect_data(csv_path=path)
             stats = {s["column"]: s for s in result["column_statistics"]}
             assert "electricity_kwh" in stats
             for key in ("mean", "std", "min", "max", "p5", "p95", "n_missing", "coverage_pct"):
                 assert key in stats["electricity_kwh"], f"Missing stat: {key}"
-        finally:
-            Path(path).unlink(missing_ok=True)
-
-    @pytest.mark.asyncio
-    async def test_covariate_stats_present(self):
-        path = _make_csv(add_temp=True)
-        try:
-            result = await inspect_data(csv_path=path)
-            stats = {s["column"]: s for s in result["column_statistics"]}
             assert "outdoor_temp" in stats
         finally:
             Path(path).unlink(missing_ok=True)
@@ -275,29 +251,14 @@ class TestGapAnalysis:
             Path(path).unlink(missing_ok=True)
 
     @pytest.mark.asyncio
-    async def test_gap_detected(self):
+    async def test_gap_analysis(self):
+        """A CSV with an artificial gap is detected, flagged, and listed in top_gaps."""
         path = _make_csv(periods=200, add_gap_at=100)
         try:
             result = await inspect_data(csv_path=path)
             assert result["gaps"]["n_gaps"] >= 1
             assert result["gaps"]["total_missing_steps"] >= 1
-        finally:
-            Path(path).unlink(missing_ok=True)
-
-    @pytest.mark.asyncio
-    async def test_gap_flag_in_quality_flags(self):
-        path = _make_csv(periods=200, add_gap_at=100)
-        try:
-            result = await inspect_data(csv_path=path)
             assert any("GAPS" in f for f in result["quality_flags"])
-        finally:
-            Path(path).unlink(missing_ok=True)
-
-    @pytest.mark.asyncio
-    async def test_top_gaps_populated(self):
-        path = _make_csv(periods=200, add_gap_at=100)
-        try:
-            result = await inspect_data(csv_path=path)
             assert "top_gaps" in result["gaps"]
             assert len(result["gaps"]["top_gaps"]) >= 1
         finally:

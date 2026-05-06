@@ -229,38 +229,14 @@ class TestLagFeaturesMultiResolution:
 # ---------------------------------------------------------------------------
 
 class TestInspectDataFrequency:
-    """inspect_data must infer the correct frequency from the CSV timestamps."""
-
-    @pytest.mark.asyncio
-    async def test_15min_inferred(self, csv_15min):
-        result = await inspect_data(csv_path=csv_15min)
-        assert result["success"] is True
-        assert result["frequency"]["inferred"] == "15min"
+    """inspect_data frequency inference for resolutions not covered by test_inspect_data.py."""
 
     @pytest.mark.asyncio
     async def test_30min_inferred(self, csv_30min):
+        """30-min is only tested at this resolution level."""
         result = await inspect_data(csv_path=csv_30min)
         assert result["success"] is True
         assert result["frequency"]["inferred"] == "30min"
-
-    @pytest.mark.asyncio
-    async def test_hourly_inferred(self, csv_hourly):
-        result = await inspect_data(csv_path=csv_hourly)
-        assert result["success"] is True
-        assert result["frequency"]["inferred"] == "h"
-
-    @pytest.mark.asyncio
-    async def test_past_covariate_detected(self, csv_hourly):
-        """outdoor_temp should be auto-detected as a past covariate."""
-        result = await inspect_data(csv_path=csv_hourly)
-        assert result["success"] is True
-        assert "outdoor_temp" in result["columns"]["past_covariates"]
-
-    @pytest.mark.asyncio
-    async def test_ready_to_train_flag(self, csv_15min):
-        result = await inspect_data(csv_path=csv_15min, frequency="15min")
-        assert result["success"] is True
-        assert result["ready_to_train"] is True
 
     @pytest.mark.asyncio
     async def test_frequency_mismatch_flag(self, csv_15min):
@@ -278,8 +254,8 @@ class TestTrainEvalMultiResolution:
     """Full train → evaluate pipeline at each temporal resolution."""
 
     @pytest.mark.asyncio
-    async def test_train_15min(self, csv_15min, temp_model_dir):
-        result = await train_forecast_model(
+    async def test_train_and_evaluate_15min(self, csv_15min, temp_model_dir):
+        train = await train_forecast_model(
             csv_path=csv_15min,
             model_type="LinearRegression",
             lookback_hours=24,
@@ -287,53 +263,11 @@ class TestTrainEvalMultiResolution:
             frequency="15min",
             building_name="feeder",
         )
-        assert result["success"] is True, result.get("error")
-        assert result["validation_metrics"]["cv_rmse"] is not None
+        assert train["success"] is True, train.get("error")
+        assert train["validation_metrics"]["cv_rmse"] is not None
         # Training info step counts must reflect 15-min resolution
-        assert result["training_info"]["lookback_hours"] == 96   # 24h × 4
-        assert result["training_info"]["horizon_hours"] == 24    # 6h × 4
-
-    @pytest.mark.asyncio
-    async def test_train_30min(self, csv_30min, temp_model_dir):
-        result = await train_forecast_model(
-            csv_path=csv_30min,
-            model_type="LinearRegression",
-            lookback_hours=24,
-            horizon_hours=6,
-            frequency="30min",
-            building_name="substation",
-        )
-        assert result["success"] is True, result.get("error")
-        assert result["validation_metrics"]["cv_rmse"] is not None
-        assert result["training_info"]["lookback_hours"] == 48   # 24h × 2
-        assert result["training_info"]["horizon_hours"] == 12    # 6h × 2
-
-    @pytest.mark.asyncio
-    async def test_train_hourly(self, csv_hourly, temp_model_dir):
-        result = await train_forecast_model(
-            csv_path=csv_hourly,
-            model_type="LinearRegression",
-            lookback_hours=24,
-            horizon_hours=6,
-            frequency="h",
-            building_name="district",
-        )
-        assert result["success"] is True, result.get("error")
-        assert result["validation_metrics"]["cv_rmse"] is not None
-        assert result["training_info"]["lookback_hours"] == 24
-        assert result["training_info"]["horizon_hours"] == 6
-
-    @pytest.mark.asyncio
-    async def test_evaluate_15min(self, csv_15min, temp_model_dir):
-        train = await train_forecast_model(
-            csv_path=csv_15min,
-            model_type="LinearRegression",
-            lookback_hours=24,
-            horizon_hours=6,
-            frequency="15min",
-            building_name="feeder",
-        )
-        assert train["success"] is True, train.get("error")
+        assert train["training_info"]["lookback_hours"] == 96   # 24h × 4
+        assert train["training_info"]["horizon_hours"] == 24    # 6h × 4
 
         result = await evaluate_forecast_model(
             model_id=train["model_id"],
@@ -343,7 +277,7 @@ class TestTrainEvalMultiResolution:
         assert result["test_metrics"]["rmse"] is not None
 
     @pytest.mark.asyncio
-    async def test_evaluate_30min(self, csv_30min, temp_model_dir):
+    async def test_train_and_evaluate_30min(self, csv_30min, temp_model_dir):
         train = await train_forecast_model(
             csv_path=csv_30min,
             model_type="LinearRegression",
@@ -353,6 +287,9 @@ class TestTrainEvalMultiResolution:
             building_name="substation",
         )
         assert train["success"] is True, train.get("error")
+        assert train["validation_metrics"]["cv_rmse"] is not None
+        assert train["training_info"]["lookback_hours"] == 48   # 24h × 2
+        assert train["training_info"]["horizon_hours"] == 12    # 6h × 2
 
         result = await evaluate_forecast_model(
             model_id=train["model_id"],
@@ -362,7 +299,7 @@ class TestTrainEvalMultiResolution:
         assert result["test_metrics"]["rmse"] is not None
 
     @pytest.mark.asyncio
-    async def test_evaluate_hourly(self, csv_hourly, temp_model_dir):
+    async def test_train_and_evaluate_hourly(self, csv_hourly, temp_model_dir):
         train = await train_forecast_model(
             csv_path=csv_hourly,
             model_type="LinearRegression",
@@ -372,6 +309,9 @@ class TestTrainEvalMultiResolution:
             building_name="district",
         )
         assert train["success"] is True, train.get("error")
+        assert train["validation_metrics"]["cv_rmse"] is not None
+        assert train["training_info"]["lookback_hours"] == 24
+        assert train["training_info"]["horizon_hours"] == 6
 
         result = await evaluate_forecast_model(
             model_id=train["model_id"],
@@ -411,7 +351,7 @@ class TestTrainEvalMultiResolution:
 # ---------------------------------------------------------------------------
 
 class TestDataSummaryMultiResolution:
-    """Data summary returned by train must reflect correct features."""
+    """Data summary returned by train must reflect correct features and sample counts."""
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("freq,building", [
@@ -419,36 +359,8 @@ class TestDataSummaryMultiResolution:
         ("30min", "substation"),
         ("h",     "district"),
     ])
-    async def test_covariate_columns_in_summary(self, freq, building, tmp_path, monkeypatch):
-        monkeypatch.setenv("LOAD_FORECASTING_MODEL_DIR", str(tmp_path))
-        path = _make_synthetic_csv(freq, n_days=100)
-        try:
-            result = await train_forecast_model(
-                csv_path=path,
-                model_type="LinearRegression",
-                lookback_hours=24,
-                horizon_hours=6,
-                frequency=freq,
-                building_name=building,
-            )
-            assert result["success"] is True, result.get("error")
-            covs = result["data_summary"]["covariate_columns"]
-            # Calendar and lag features must be present
-            assert any("cal_" in c for c in covs), f"No calendar features at {freq}"
-            assert any("lag_" in c for c in covs), f"No lag features at {freq}"
-            # outdoor_temp auto-detected
-            assert "outdoor_temp" in covs, f"outdoor_temp missing at {freq}"
-        finally:
-            Path(path).unlink(missing_ok=True)
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("freq,building", [
-        ("15min", "feeder"),
-        ("30min", "substation"),
-        ("h",     "district"),
-    ])
-    async def test_total_samples_matches_expected(self, freq, building, tmp_path, monkeypatch):
-        """Verify the loader sees the right sample count for each frequency."""
+    async def test_train_data_summary(self, freq, building, tmp_path, monkeypatch):
+        """Covariate columns and total sample count must be correct at each resolution."""
         monkeypatch.setenv("LOAD_FORECASTING_MODEL_DIR", str(tmp_path))
         n_days = 100
         steps_per_hour = FREQ_TO_STEPS_PER_HOUR[freq]
@@ -465,6 +377,10 @@ class TestDataSummaryMultiResolution:
                 building_name=building,
             )
             assert result["success"] is True, result.get("error")
+            covs = result["data_summary"]["covariate_columns"]
+            assert any("cal_" in c for c in covs), f"No calendar features at {freq}"
+            assert any("lag_" in c for c in covs), f"No lag features at {freq}"
+            assert "outdoor_temp" in covs, f"outdoor_temp missing at {freq}"
             assert result["data_summary"]["total_samples"] == expected_samples
         finally:
             Path(path).unlink(missing_ok=True)

@@ -239,12 +239,9 @@ class TestCalendarFeatures:
         for col in ("cal_hour", "cal_dow"):
             assert col not in loader.df.columns
 
-    def test_hour_sin_range(self, sample_csv):
+    def test_hour_sin_cos_range(self, sample_csv):
         loader = ForecastingDataLoader(csv_path=sample_csv)
         assert loader.df["cal_hour_sin"].between(-1, 1).all()
-
-    def test_hour_cos_range(self, sample_csv):
-        loader = ForecastingDataLoader(csv_path=sample_csv)
         assert loader.df["cal_hour_cos"].between(-1, 1).all()
 
     def test_hour_sin_cos_identity(self, sample_csv):
