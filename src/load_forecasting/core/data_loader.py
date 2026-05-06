@@ -24,7 +24,7 @@ from darts import TimeSeries
 from darts.dataprocessing.transformers import Scaler
 
 from .spec_loader import get_auto_detect_patterns
-from .frequency_utils import FREQ_TO_STEPS_PER_HOUR, hours_to_steps
+from .frequency_utils import  hours_to_steps
 
 logger = logging.getLogger(__name__)
 

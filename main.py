@@ -23,7 +23,7 @@ import sys
 # Add src to path for development
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
-from load_forecasting.server import mcp, run_server
+from load_forecasting.server import run_server
 
 
 def main():

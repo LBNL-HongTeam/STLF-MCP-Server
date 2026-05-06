@@ -1,0 +1,16 @@
+{
+  "version": "1.0",
+  "models": [
+    {
+      "model_id": "test_building_LinearRegression_20260505_163320",
+      "model_type": "LinearRegression",
+      "building_name": "test_building",
+      "created_at": "2026-05-05T23:33:20.631399+00:00",
+      "validation_cv_rmse": 9.32,
+      "lookback_hours": 24,
+      "horizon_hours": 6,
+      "path": "models/test_building_LinearRegression_20260505_163320"
+    }
+  ],
+  "last_updated": "2026-05-05T23:33:20.631399+00:00"
+}

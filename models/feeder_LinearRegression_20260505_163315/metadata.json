@@ -1,0 +1,78 @@
+{
+  "model_id": "feeder_LinearRegression_20260505_163315",
+  "model_type": "LinearRegression",
+  "darts_class": "darts.models.RegressionModel",
+  "building_name": "feeder",
+  "created_at": "2026-05-05T23:33:15.296007+00:00",
+  "config": {
+    "lookback_hours": 24,
+    "horizon_hours": 6,
+    "frequency": "15min",
+    "validation_split": 0.2
+  },
+  "column_mapping": {
+    "datetime": "timestamp",
+    "target": "electricity_kwh",
+    "past_covariates": [
+      "outdoor_temp",
+      "cal_hour",
+      "cal_dow",
+      "cal_month",
+      "cal_is_weekend",
+      "cal_hour_sin",
+      "cal_hour_cos",
+      "lag_24h",
+      "lag_48h",
+      "lag_168h"
+    ],
+    "future_covariates": []
+  },
+  "data_info": {
+    "total_samples": 9600,
+    "start_date": "2023-01-01T00:00:00+00:00",
+    "end_date": "2023-04-10T23:45:00+00:00",
+    "target_column": "electricity_kwh",
+    "covariate_columns": [
+      "outdoor_temp",
+      "cal_hour",
+      "cal_dow",
+      "cal_month",
+      "cal_is_weekend",
+      "cal_hour_sin",
+      "cal_hour_cos",
+      "lag_24h",
+      "lag_48h",
+      "lag_168h"
+    ],
+    "future_covariate_columns": [],
+    "frequency_detected": "15min",
+    "missing_value_count": 0,
+    "target_mean": 117.1,
+    "target_std": 8.402223151703977,
+    "target_min": 100.0,
+    "target_max": 130.0,
+    "training_samples": 7680,
+    "validation_samples": 1920
+  },
+  "metrics": {
+    "training": {
+      "rmse": 8.8232,
+      "mae": 7.3685,
+      "mape": 6.03,
+      "cv_rmse": 7.32,
+      "r_squared": -0.5829
+    },
+    "validation": {
+      "rmse": 9.4216,
+      "mae": 7.3933,
+      "mape": 5.91,
+      "cv_rmse": 7.73,
+      "r_squared": -1.0293
+    }
+  },
+  "version_info": {
+    "darts_version": "0.44.0",
+    "load_forecasting_version": "0.1.0",
+    "python_version": "3.12.10"
+  }
+}
