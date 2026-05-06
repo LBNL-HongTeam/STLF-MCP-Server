@@ -54,21 +54,22 @@ def calculate_metrics(
             "r_squared": None,
         }
 
+    # Shared residual arrays — computed once, reused across all metrics
+    residuals = actual_vals - predicted_vals
+    sq_residuals = residuals ** 2
+
     # RMSE
-    rmse_val = float(np.sqrt(np.mean((actual_vals - predicted_vals) ** 2)))
+    rmse_val = float(np.sqrt(sq_residuals.mean()))
 
     # MAE
-    mae_val = float(np.mean(np.abs(actual_vals - predicted_vals)))
+    mae_val = float(np.abs(residuals).mean())
 
     # MAPE (handle zero values)
     non_zero_mask = actual_vals != 0
     if non_zero_mask.any():
         mape_val = float(
             np.mean(
-                np.abs(
-                    (actual_vals[non_zero_mask] - predicted_vals[non_zero_mask])
-                    / actual_vals[non_zero_mask]
-                )
+                np.abs(residuals[non_zero_mask] / actual_vals[non_zero_mask])
             )
             * 100
         )
@@ -76,11 +77,11 @@ def calculate_metrics(
         mape_val = float("inf")
 
     # CV-RMSE
-    mean_actual = float(np.mean(actual_vals))
+    mean_actual = float(actual_vals.mean())
     cv_rmse_val = (rmse_val / mean_actual) * 100 if mean_actual != 0 else float("inf")
 
     # R-squared
-    ss_res = float(np.sum((actual_vals - predicted_vals) ** 2))
+    ss_res = float(sq_residuals.sum())
     ss_tot = float(np.sum((actual_vals - mean_actual) ** 2))
     r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0.0
 

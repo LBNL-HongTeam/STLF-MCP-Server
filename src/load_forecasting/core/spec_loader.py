@@ -45,9 +45,12 @@ def load_spec(tool_name: str) -> Optional[dict]:
         return None
 
 
+@lru_cache(maxsize=1)
 def get_all_specs() -> list[dict]:
     """
     Load all specs for get_algorithm_specifications tool.
+
+    Cached: specs are static files; the cache is valid for the process lifetime.
 
     Returns:
         List of all parsed YAML spec dicts
@@ -137,6 +140,9 @@ def get_preprocessing_config(tool_name: str) -> dict:
     return spec.get("preprocessing", {})
 
 
+_REQUIRED_SPEC_FIELDS: frozenset = frozenset({"id", "version", "mcp_server", "mcp_tool"})
+
+
 def validate_spec(spec_data: dict) -> bool:
     """
     Validate that a spec has required fields.
@@ -147,9 +153,7 @@ def validate_spec(spec_data: dict) -> bool:
     Returns:
         True if valid, False otherwise
     """
-    required_fields = ["id", "version", "mcp_server", "mcp_tool"]
-
-    for field in required_fields:
+    for field in _REQUIRED_SPEC_FIELDS:
         if field not in spec_data:
             logger.warning(f"Spec missing required field: {field}")
             return False

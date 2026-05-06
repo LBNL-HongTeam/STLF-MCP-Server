@@ -11,13 +11,32 @@ Provides:
 import json
 import pickle
 import importlib.metadata
+import shutil
+import sys
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Any
 import logging
 import os
 
+from darts.models import RegressionModel, NaiveMean, NaiveSeasonal, NaiveMovingAverage
+
 logger = logging.getLogger(__name__)
+
+# Version strings are constant for the lifetime of the process — cache them once.
+try:
+    _DARTS_VERSION: str = importlib.metadata.version("darts")
+except Exception:
+    _DARTS_VERSION = "unknown"
+
+try:
+    _PKG_VERSION: str = importlib.metadata.version("load-forecasting-mcp")
+except Exception:
+    _PKG_VERSION = "0.1.0"
+
+_PYTHON_VERSION: str = (
+    f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+)
 
 
 class ModelNotFoundError(Exception):
@@ -40,6 +59,10 @@ class ModelCorruptedError(Exception):
 
 class ModelRegistry:
     """Registry for trained forecasting models."""
+
+    # In-memory cache keyed by registry file path so that multiple registries
+    # pointing to different base_dirs don't share state (important for tests).
+    _registry_cache: dict[str, dict] = {}
 
     def __init__(self, base_dir: Optional[str] = None):
         """
@@ -70,18 +93,27 @@ class ModelRegistry:
         self._save_registry(registry)
 
     def _load_registry(self) -> dict:
-        """Load registry from disk."""
+        """Load registry from disk (or return in-memory cache for this path)."""
+        cache_key = str(self.registry_path)
+        if cache_key in ModelRegistry._registry_cache:
+            return ModelRegistry._registry_cache[cache_key]
+
         if not self.registry_path.exists():
             self._init_registry()
+            return ModelRegistry._registry_cache[cache_key]
 
         with open(self.registry_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            ModelRegistry._registry_cache[cache_key] = json.load(f)
+
+        return ModelRegistry._registry_cache[cache_key]
 
     def _save_registry(self, registry: dict) -> None:
-        """Save registry to disk."""
+        """Save registry to disk and update in-memory cache."""
         registry["last_updated"] = datetime.now(timezone.utc).isoformat()
         with open(self.registry_path, "w", encoding="utf-8") as f:
             json.dump(registry, f, indent=2, default=str)
+        # Keep cache consistent with what was just written
+        ModelRegistry._registry_cache[str(self.registry_path)] = registry
 
     def generate_model_id(
         self,
@@ -142,17 +174,6 @@ class ModelRegistry:
         model_dir = self.base_dir / model_id
         model_dir.mkdir(parents=True, exist_ok=True)
 
-        # Get version info
-        try:
-            darts_version = importlib.metadata.version("darts")
-        except Exception:
-            darts_version = "unknown"
-
-        try:
-            package_version = importlib.metadata.version("load-forecasting-mcp")
-        except Exception:
-            package_version = "0.1.0"
-
         # Build metadata
         metadata = {
             "model_id": model_id,
@@ -168,9 +189,9 @@ class ModelRegistry:
                 "validation": validation_metrics,
             },
             "version_info": {
-                "darts_version": darts_version,
-                "load_forecasting_version": package_version,
-                "python_version": f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
+                "darts_version": _DARTS_VERSION,
+                "load_forecasting_version": _PKG_VERSION,
+                "python_version": _PYTHON_VERSION,
             },
         }
 
@@ -273,9 +294,7 @@ class ModelRegistry:
             raise ModelCorruptedError(f"Model file not found: {model_id}")
 
         try:
-            # Try Darts load first
-            from darts.models import RegressionModel, NaiveMean, NaiveSeasonal, NaiveMovingAverage
-
+            # Try Darts load first (models already imported at module level)
             model_type = metadata.get("model_type", "")
             if model_type == "LinearRegression":
                 model = RegressionModel.load(str(model_path))
@@ -388,8 +407,6 @@ class ModelRegistry:
             return False
 
         # Remove directory
-        import shutil
-
         shutil.rmtree(model_dir)
 
         # Update registry

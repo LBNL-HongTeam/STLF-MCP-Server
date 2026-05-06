@@ -4,6 +4,7 @@ MCP Tool implementations for load forecasting.
 These functions are wrapped and registered in server.py.
 """
 
+from pathlib import Path
 from typing import Optional
 import logging
 
@@ -11,8 +12,8 @@ import numpy as np
 import pandas as pd
 
 from ..core.data_loader import ForecastingDataLoader, DataLoadError, _infer_frequency
-from ..core.trainer import train_model as _train_model, get_available_models
-from ..core.evaluator import calculate_residual_analysis, compare_to_validation
+from ..core.trainer import train_model as _train_model, get_available_models, _generate_predictions
+from ..core.evaluator import calculate_residual_analysis, compare_to_validation, calculate_metrics
 from ..core.model_registry import (
     ModelRegistry,
     ModelNotFoundError,
@@ -21,6 +22,8 @@ from ..core.model_registry import (
 from ..core.frequency_utils import hours_to_steps, FREQ_TO_STEPS_PER_HOUR
 
 logger = logging.getLogger(__name__)
+
+
 
 
 def create_success_response(**data) -> dict:
@@ -235,7 +238,6 @@ async def evaluate_forecast_model(
     try:
         # Load model from registry
         registry = ModelRegistry()
-
         try:
             model, metadata, scalers = registry.load_model(model_id)
         except ModelNotFoundError:
@@ -284,16 +286,12 @@ async def evaluate_forecast_model(
         horizon_steps = hours_to_steps(horizon, frequency)
 
         # Generate predictions
-        from ..core.trainer import _generate_predictions
-
         predictions = _generate_predictions(
             model, test_series, test_covariates, lookback_steps, horizon_steps,
             future_covariates=test_future_covariates,
         )
 
         # Calculate metrics
-        from ..core.evaluator import calculate_metrics
-
         test_metrics = calculate_metrics(
             test_series[lookback_steps:],
             predictions,
@@ -333,20 +331,28 @@ async def evaluate_forecast_model(
                 pred_original = predictions
                 actual_original = test_series[lookback_steps:]
 
-            # Build predictions list
-            pred_list = []
+            # Build predictions list — vectorised to avoid per-row Python overhead
             pred_times = pred_original.time_index
             pred_values = pred_original.values().flatten()
             actual_values = actual_original.values().flatten()
 
             min_len = min(len(pred_times), len(pred_values), len(actual_values))
-            for i in range(min_len):
-                pred_list.append({
-                    "timestamp": pred_times[i].isoformat(),
-                    "actual": float(actual_values[i]),
-                    "predicted": float(pred_values[i]),
-                    "residual": float(actual_values[i] - pred_values[i]),
-                })
+            pred_times_s = pred_times[:min_len]
+            pred_values_s = pred_values[:min_len]
+            actual_values_s = actual_values[:min_len]
+            residuals_s = actual_values_s - pred_values_s
+
+            pred_list = [
+                {
+                    "timestamp": t.isoformat(),
+                    "actual": float(a),
+                    "predicted": float(p),
+                    "residual": float(r),
+                }
+                for t, a, p, r in zip(
+                    pred_times_s, actual_values_s, pred_values_s, residuals_s
+                )
+            ]
 
             response_data["predictions"] = pred_list
 
@@ -361,8 +367,6 @@ async def evaluate_forecast_model(
 
         # Save to CSV if requested
         if output_csv_path and return_predictions:
-            import pandas as pd
-
             pred_df = pd.DataFrame(response_data["predictions"])
             pred_df.to_csv(output_csv_path, index=False)
             response_data["output_csv_path"] = output_csv_path
@@ -394,7 +398,6 @@ async def list_models(
     """
     try:
         registry = ModelRegistry()
-
         models, total_count = registry.list_models(
             building_name=building_name,
             model_type=model_type,
@@ -442,8 +445,6 @@ async def inspect_data(
         quality flags, and feature suggestions.
     """
     try:
-        from pathlib import Path
-
         path = Path(csv_path)
         if not path.exists():
             return create_error_response(
@@ -480,12 +481,14 @@ async def inspect_data(
             detected_frequency = _sniff_frequency(raw_df)
 
         try:
+            # Pass the already-read raw_df to avoid a second disk read.
             loader = ForecastingDataLoader(
                 csv_path=csv_path,
                 column_mapping=column_mapping,
                 frequency=detected_frequency or "h",
                 add_calendar_features=False,
                 lag_hours=[],
+                dataframe=raw_df,
             )
         except DataLoadError as e:
             loader_error = str(e)
@@ -499,8 +502,9 @@ async def inspect_data(
             target_col = resolved_mapping.get("target")
             cov_cols = resolved_mapping.get("past_covariates", [])
             fut_cov_cols = resolved_mapping.get("future_covariates", [])
-            inferred_freq = _infer_frequency(loader.df.index)
-            actual_frequency = inferred_freq or detected_frequency or "unknown"
+            # Use the inferred frequency stored by _validate_frequency — no
+            # extra _infer_frequency call needed.
+            actual_frequency = loader.inferred_frequency or detected_frequency or "unknown"
         else:
             # Loader failed — do best-effort column sniffing from raw df
             resolved_mapping = _sniff_columns(raw_df, column_mapping)
@@ -510,16 +514,13 @@ async def inspect_data(
             fut_cov_cols = resolved_mapping.get("future_covariates", [])
             actual_frequency = detected_frequency or "unknown"
 
-        all_mapped = [dt_col, target_col] + cov_cols + fut_cov_cols
+        mapped_set = {dt_col, target_col, *cov_cols, *fut_cov_cols}
         column_report = {
             "datetime": dt_col,
             "target": target_col,
             "past_covariates": cov_cols,
             "future_covariates": fut_cov_cols,
-            "unrecognised": [
-                c for c in columns_in_file
-                if c not in all_mapped
-            ],
+            "unrecognised": [c for c in columns_in_file if c not in mapped_set],
             "all_columns": columns_in_file,
         }
 
@@ -572,7 +573,6 @@ async def inspect_data(
         # ------------------------------------------------------------------
         column_stats: list[dict] = []
         work_df = loader.df if loader is not None else raw_df
-        raw_df_indexed = raw_df.set_index(raw_df.columns[0]) if loader is not None else raw_df
 
         # Build the list of columns to report stats for
         _stat_cols: list = []
@@ -604,13 +604,14 @@ async def inspect_data(
                 "dtype": str(s.dtype),
             }
             if pd.api.types.is_numeric_dtype(s) and len(non_null) > 0:
+                p5, p95 = np.percentile(non_null, [5, 95])
                 stat.update({
                     "mean": round(float(non_null.mean()), 4),
                     "std": round(float(non_null.std()), 4),
                     "min": round(float(non_null.min()), 4),
                     "max": round(float(non_null.max()), 4),
-                    "p5": round(float(np.percentile(non_null, 5)), 4),
-                    "p95": round(float(np.percentile(non_null, 95)), 4),
+                    "p5": round(float(p5), 4),
+                    "p95": round(float(p95), 4),
                     "n_negative": int((non_null < 0).sum()),
                     "n_zero": int((non_null == 0).sum()),
                 })
@@ -625,9 +626,7 @@ async def inspect_data(
             diffs = loader.df.index.to_series().diff().dropna()
             gaps = diffs[diffs > expected_td * 1.5]  # 50% tolerance
             gap_report["n_gaps"] = len(gaps)
-            gap_report["total_missing_steps"] = int(
-                sum((g / expected_td) - 1 for g in gaps)
-            )
+            gap_report["total_missing_steps"] = int((gaps / expected_td - 1).sum())
             if len(gaps) > 0:
                 largest = gaps.max()
                 gap_report["largest_gap"] = str(largest)
@@ -722,8 +721,8 @@ async def inspect_data(
             )
         if target_col and loader is not None:
             # Check if data is long enough for default lookback/horizon
-            min_needed = hours_to_steps(24, actual_frequency if actual_frequency in FREQ_TO_STEPS_PER_HOUR else "h") + \
-                         hours_to_steps(6, actual_frequency if actual_frequency in FREQ_TO_STEPS_PER_HOUR else "h") + 100
+            _freq_for_steps = actual_frequency if actual_frequency in FREQ_TO_STEPS_PER_HOUR else "h"
+            min_needed = hours_to_steps(24, _freq_for_steps) + hours_to_steps(6, _freq_for_steps) + 100
             if n_rows_clean < min_needed:
                 suggestions.append(
                     f"Data has {n_rows_clean} rows, which may be insufficient "
@@ -770,8 +769,14 @@ def _sniff_frequency(raw_df: pd.DataFrame) -> Optional[str]:
     """
     Attempt to infer frequency from the first column that parses as datetimes.
     Returns a frequency string or None.
+
+    Skips obviously non-datetime columns (pure numeric dtypes) before trying
+    pd.to_datetime, which would otherwise parse all rows before failing.
     """
     for col in raw_df.columns:
+        # Fast dtype pre-check: numeric columns are never datetime strings.
+        if pd.api.types.is_numeric_dtype(raw_df[col]) and not pd.api.types.is_datetime64_any_dtype(raw_df[col]):
+            continue
         try:
             parsed = pd.to_datetime(raw_df[col], utc=True)
             idx = pd.DatetimeIndex(parsed)

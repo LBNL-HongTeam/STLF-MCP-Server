@@ -63,7 +63,7 @@ def _infer_frequency(index: pd.DatetimeIndex) -> Optional[str]:
     if len(index) < 2:
         return None
 
-    diffs = pd.Series(index).diff().dropna()
+    diffs = index.to_series().diff().dropna()
     median_gap = diffs.median()
 
     tolerance = pd.Timedelta(minutes=1)
@@ -88,6 +88,7 @@ class ForecastingDataLoader:
         max_gap: str = "2h",
         add_calendar_features: bool = True,
         lag_hours: Optional[list] = None,
+        dataframe: Optional[pd.DataFrame] = None,
     ):
         """
         Initialize data loader.
@@ -111,6 +112,9 @@ class ForecastingDataLoader:
             lag_hours: List of hour offsets for lag features derived from the
                 target column.  Defaults to [24, 48, 168].  Pass [] to
                 disable lag features.
+            dataframe: Pre-loaded DataFrame to use instead of reading
+                ``csv_path`` from disk.  When provided, ``csv_path`` is still
+                recorded for metadata purposes but the file is not re-read.
 
         Raises:
             DataLoadError: If the file is not found, cannot be parsed,
@@ -123,25 +127,29 @@ class ForecastingDataLoader:
         self.add_calendar_features = add_calendar_features
         self.lag_hours = lag_hours if lag_hours is not None else _DEFAULT_LAG_HOURS
 
-        # ------------------------------------------------------------------
-        # File existence
-        # ------------------------------------------------------------------
-        if not self.csv_path.exists():
-            raise DataLoadError(
-                f"CSV file not found: {csv_path}\n"
-                "Check that the path is correct and the file is accessible."
-            )
+        if dataframe is not None:
+            # Caller already has the DataFrame — skip disk I/O entirely.
+            self.df = dataframe.copy()
+        else:
+            # ------------------------------------------------------------------
+            # File existence
+            # ------------------------------------------------------------------
+            if not self.csv_path.exists():
+                raise DataLoadError(
+                    f"CSV file not found: {csv_path}\n"
+                    "Check that the path is correct and the file is accessible."
+                )
 
-        # ------------------------------------------------------------------
-        # Read CSV
-        # ------------------------------------------------------------------
-        try:
-            self.df = pd.read_csv(csv_path)
-        except Exception as e:
-            raise DataLoadError(
-                f"Failed to read CSV '{csv_path}': {e}\n"
-                "Ensure the file is a valid, non-corrupted CSV."
-            )
+            # ------------------------------------------------------------------
+            # Read CSV
+            # ------------------------------------------------------------------
+            try:
+                self.df = pd.read_csv(csv_path)
+            except Exception as e:
+                raise DataLoadError(
+                    f"Failed to read CSV '{csv_path}': {e}\n"
+                    "Ensure the file is a valid, non-corrupted CSV."
+                )
 
         if self.df.empty:
             raise DataLoadError(
@@ -330,11 +338,16 @@ class ForecastingDataLoader:
         """
         Infer the actual data frequency and compare it to the declared one.
 
+        Stores the result as ``self.inferred_frequency`` for callers that need
+        it (e.g. inspect_data) to avoid a repeated call to _infer_frequency.
+
         Logs a warning (not an error) when they differ so that downstream
         Darts operations can still attempt to process the data — Darts will
         raise its own error if the index is truly irregular.
         """
         inferred = _infer_frequency(self.df.index)
+        self.inferred_frequency: Optional[str] = inferred
+
         if inferred is None:
             logger.warning(
                 "Could not infer data frequency from timestamps. "
@@ -494,12 +507,13 @@ class ForecastingDataLoader:
         idx = self.df.index
         hour = idx.hour.astype(float)
 
+        _two_pi_over_24 = 2 * math.pi / 24  # constant — computed once per call
         self.df["cal_hour"] = hour
         self.df["cal_dow"] = idx.dayofweek.astype(float)
         self.df["cal_month"] = idx.month.astype(float)
         self.df["cal_is_weekend"] = (idx.dayofweek >= 5).astype(float)
-        self.df["cal_hour_sin"] = np.sin(2 * math.pi * hour / 24)
-        self.df["cal_hour_cos"] = np.cos(2 * math.pi * hour / 24)
+        self.df["cal_hour_sin"] = np.sin(hour * _two_pi_over_24)
+        self.df["cal_hour_cos"] = np.cos(hour * _two_pi_over_24)
 
         existing = set(self.column_mapping.get("past_covariates", []))
         new_cols = [c for c in _CALENDAR_COLS if c not in existing]
@@ -519,11 +533,10 @@ class ForecastingDataLoader:
         the first valid value to avoid introducing new gaps.
         """
         target_col = self.column_mapping["target"]
-        freq_td = _freq_str_to_timedelta(self.frequency)
         added: list[str] = []
 
         for h in self.lag_hours:
-            lag_steps = int(round(h * 3600 / freq_td.total_seconds()))
+            lag_steps = hours_to_steps(h, self.frequency)
             col_name = f"lag_{h}h"
             if col_name in self.df.columns:
                 continue  # already present (e.g. explicit mapping)
@@ -707,20 +720,23 @@ class ForecastingDataLoader:
 # Module-level helper (used both inside and outside the class)
 # ---------------------------------------------------------------------------
 
+# Lookup table built once at import time — not re-created on every call.
+_FREQ_TIMEDELTA_MAP: dict = {
+    "h": pd.Timedelta(hours=1),
+    "H": pd.Timedelta(hours=1),
+    "15min": pd.Timedelta(minutes=15),
+    "15T": pd.Timedelta(minutes=15),
+    "30min": pd.Timedelta(minutes=30),
+    "30T": pd.Timedelta(minutes=30),
+    "D": pd.Timedelta(days=1),
+    "d": pd.Timedelta(days=1),
+}
+
+
 def _freq_str_to_timedelta(freq: str) -> pd.Timedelta:
     """Convert a supported frequency string to a pd.Timedelta."""
-    _MAP = {
-        "h": pd.Timedelta(hours=1),
-        "H": pd.Timedelta(hours=1),
-        "15min": pd.Timedelta(minutes=15),
-        "15T": pd.Timedelta(minutes=15),
-        "30min": pd.Timedelta(minutes=30),
-        "30T": pd.Timedelta(minutes=30),
-        "D": pd.Timedelta(days=1),
-        "d": pd.Timedelta(days=1),
-    }
-    if freq in _MAP:
-        return _MAP[freq]
+    if freq in _FREQ_TIMEDELTA_MAP:
+        return _FREQ_TIMEDELTA_MAP[freq]
     try:
         return pd.Timedelta(freq)
     except ValueError:

@@ -26,6 +26,10 @@ from .frequency_utils import get_seasonality_steps
 
 logger = logging.getLogger(__name__)
 
+# Frozenset for O(1) local-model membership test
+_LOCAL_MODEL_NAMES: frozenset = frozenset(
+    {"NaiveMean", "NaiveSeasonal", "NaiveMovingAverage"}
+)
 
 # Model class mapping
 MODEL_CLASSES = {
@@ -163,17 +167,16 @@ def train_model(
 
     # Train model
     try:
-        if hasattr(model, "fit"):
-            if model_type == "LinearRegression":
-                fit_kwargs: dict = {}
-                if train_covariates is not None:
-                    fit_kwargs["past_covariates"] = train_covariates
-                if train_future_covariates is not None:
-                    fit_kwargs["future_covariates"] = train_future_covariates
-                model.fit(train_series, **fit_kwargs)
-            else:
-                model.fit(train_series)
-            logger.info("Model training completed")
+        if model_type == "LinearRegression":
+            fit_kwargs: dict = {}
+            if train_covariates is not None:
+                fit_kwargs["past_covariates"] = train_covariates
+            if train_future_covariates is not None:
+                fit_kwargs["future_covariates"] = train_future_covariates
+            model.fit(train_series, **fit_kwargs)
+        else:
+            model.fit(train_series)
+        logger.info("Model training completed")
     except Exception as e:
         logger.error(f"Model training failed: {e}")
         raise
@@ -252,9 +255,7 @@ def _generate_predictions(
     """
     # Check if this is a LocalForecastingModel (naive baselines)
     model_class_name = model.__class__.__name__
-    is_local_model = model_class_name in [
-        "NaiveMean", "NaiveSeasonal", "NaiveMovingAverage"
-    ]
+    is_local_model = model_class_name in _LOCAL_MODEL_NAMES
 
     if is_local_model:
         # LocalForecastingModels don't support historical_forecasts
@@ -314,26 +315,24 @@ def _manual_walk_forward(
     predictions_list = []
     start_idx = lookback
 
+    # Allocate a single reusable model instance before the loop so we avoid
+    # repeated object construction on every stride step (O(n) instead of O(n²)).
+    model_class = model.__class__
+    if hasattr(model, 'K'):  # NaiveSeasonal
+        walk_model = model_class(K=model.K)
+    elif hasattr(model, 'input_chunk_length'):  # NaiveMovingAverage
+        walk_model = model_class(input_chunk_length=model.input_chunk_length)
+    else:  # NaiveMean
+        walk_model = model_class()
+
     # Generate predictions at regular intervals
     while start_idx + horizon <= len(series):
         # Get training data up to current point
         train_series = series[:start_idx]
 
-        # Refit the model on this training data
-        # Create a new instance with same parameters
-        model_class = model.__class__
-        if hasattr(model, 'K'):  # NaiveSeasonal
-            new_model = model_class(K=model.K)
-        elif hasattr(model, 'input_chunk_length'):  # NaiveMovingAverage
-            new_model = model_class(
-                input_chunk_length=model.input_chunk_length
-            )
-        else:  # NaiveMean
-            new_model = model_class()
-
-        # Fit and predict
-        new_model.fit(train_series)
-        pred = new_model.predict(n=horizon)
+        # Refit and predict
+        walk_model.fit(train_series)
+        pred = walk_model.predict(n=horizon)
         predictions_list.append(pred)
 
         # Move forward by horizon steps
