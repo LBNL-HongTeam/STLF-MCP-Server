@@ -1,17 +1,45 @@
 """
-MCP Tool Wrappers for Load Forecasting.
+MCP Tool implementations for load forecasting.
 
-These functions are registered as MCP tools in server.py.
+All tool functions are registered as MCP tools in server.py. They are split
+across per-workflow modules (train, tune, evaluation, backtest, inference,
+inspection, reports, data_prep) with shared helpers in ``_common``.
 """
 
-from .forecasting_tools import (
-    train_forecast_model,
-    evaluate_forecast_model,
+from .train import train_forecast_model
+from .tune import tune_model
+from .evaluation import evaluate_forecast_model
+from .backtest import backtest_model
+from .inference import generate_forecast
+from .inspection import inspect_data
+from .reports import (
+    generate_evaluation_report,
+    generate_backtest_report,
+    generate_inference_dashboard,
+)
+from .data_prep import (
     list_models,
+    merge_covariates,
+    fetch_weather_forecast,
+)
+from .batch import (
+    batch_train_forecast_models,
+    batch_generate_forecast,
 )
 
 __all__ = [
     "train_forecast_model",
+    "tune_model",
     "evaluate_forecast_model",
+    "backtest_model",
+    "generate_forecast",
+    "inspect_data",
+    "generate_evaluation_report",
+    "generate_backtest_report",
+    "generate_inference_dashboard",
     "list_models",
+    "merge_covariates",
+    "fetch_weather_forecast",
+    "batch_train_forecast_models",
+    "batch_generate_forecast",
 ]

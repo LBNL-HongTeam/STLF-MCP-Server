@@ -224,14 +224,18 @@ class TestCalendarFeatures:
     def test_calendar_columns_present(self, sample_csv):
         loader = ForecastingDataLoader(csv_path=sample_csv, add_calendar_features=True)
         for col in ("cal_hour", "cal_dow", "cal_month", "cal_is_weekend",
-                    "cal_hour_sin", "cal_hour_cos"):
+                    "cal_hour_sin", "cal_hour_cos",
+                    "cal_dow_sin", "cal_dow_cos",
+                    "cal_month_sin", "cal_month_cos"):
             assert col in loader.df.columns, f"Missing calendar column: {col}"
 
     def test_calendar_columns_in_mapping(self, sample_csv):
         loader = ForecastingDataLoader(csv_path=sample_csv, add_calendar_features=True)
         covs = loader.column_mapping["past_covariates"]
         for col in ("cal_hour", "cal_dow", "cal_month", "cal_is_weekend",
-                    "cal_hour_sin", "cal_hour_cos"):
+                    "cal_hour_sin", "cal_hour_cos",
+                    "cal_dow_sin", "cal_dow_cos",
+                    "cal_month_sin", "cal_month_cos"):
             assert col in covs, f"Calendar column not in past_covariates mapping: {col}"
 
     def test_calendar_disabled(self, sample_csv):
@@ -254,6 +258,49 @@ class TestCalendarFeatures:
         loader = ForecastingDataLoader(csv_path=sample_csv)
         vals = loader.df["cal_is_weekend"].unique()
         assert set(vals).issubset({0.0, 1.0})
+
+    def test_dow_sin_cos_identity(self, sample_csv):
+        """sin²(dow) + cos²(dow) should equal 1 for every row (Li et al. 2025, Table 6)."""
+        loader = ForecastingDataLoader(csv_path=sample_csv)
+        sq_sum = loader.df["cal_dow_sin"] ** 2 + loader.df["cal_dow_cos"] ** 2
+        assert (sq_sum - 1.0).abs().max() < 1e-10
+
+    def test_month_sin_cos_identity(self, sample_csv):
+        """sin²(month) + cos²(month) should equal 1 for every row (Li et al. 2025, Table 6)."""
+        loader = ForecastingDataLoader(csv_path=sample_csv)
+        sq_sum = loader.df["cal_month_sin"] ** 2 + loader.df["cal_month_cos"] ** 2
+        assert (sq_sum - 1.0).abs().max() < 1e-10
+
+    def test_month_cycle_wraps_dec_jan(self, tmp_path):
+        """Dec 31 and Jan 1 should be adjacent on the unit circle (month-1 offset check)."""
+        import math
+        # Build a minimal two-row DataFrame spanning the year boundary
+        idx = pd.date_range("2023-12-31 23:00", periods=2, freq="h", tz="UTC")
+        df = pd.DataFrame({"timestamp": idx, "electricity_kwh": [1.0, 1.0]})
+        csv = tmp_path / "wrap.csv"
+        df.to_csv(csv, index=False)
+        loader = ForecastingDataLoader(
+            csv_path=str(csv),
+            column_mapping={"datetime": "timestamp", "target": "electricity_kwh"},
+            add_calendar_features=True,
+            lag_hours=[],
+        )
+        dec_sin = loader.df["cal_month_sin"].iloc[0]
+        dec_cos = loader.df["cal_month_cos"].iloc[0]
+        jan_sin = loader.df["cal_month_sin"].iloc[1]
+        jan_cos = loader.df["cal_month_cos"].iloc[1]
+        # Euclidean distance on the unit circle between Dec (month=12, month0=11)
+        # and Jan (month=1, month0=0) should be small (2*sin(π/12) ≈ 0.518)
+        # and strictly less than the distance between, say, Jun and Dec (≈ √2).
+        dist_dec_jan = math.sqrt((dec_sin - jan_sin) ** 2 + (dec_cos - jan_cos) ** 2)
+        dist_jun_dec = math.sqrt(
+            (math.sin(5 * 2 * math.pi / 12) - math.sin(11 * 2 * math.pi / 12)) ** 2
+            + (math.cos(5 * 2 * math.pi / 12) - math.cos(11 * 2 * math.pi / 12)) ** 2
+        )
+        assert dist_dec_jan < dist_jun_dec, (
+            f"Dec→Jan distance {dist_dec_jan:.4f} should be less than "
+            f"Jun→Dec distance {dist_jun_dec:.4f}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -534,3 +581,172 @@ class TestFutureCovariates:
         summary = loader.get_data_summary()
         assert "future_covariate_columns" in summary
         assert "temp_forecast" in summary["future_covariate_columns"]
+
+
+# ---------------------------------------------------------------------------
+# Seasonal split tests
+# ---------------------------------------------------------------------------
+
+def _make_full_year_csv(year: int = 2023, freq: str = "h") -> str:
+    """Write a full-year hourly CSV to a temp file and return its path.
+
+    Covers all four meteorological seasons (winter/spring/summer/fall).
+    """
+    index = pd.date_range(f"{year}-01-01", periods=8760, freq=freq)
+    data = {
+        "timestamp": index,
+        "electricity_kwh": [100.0 + i * 0.01 for i in range(len(index))],
+        "outdoor_temp": [15.0 + 10.0 * pd.Timestamp(ts).month for ts in index],
+    }
+    df = pd.DataFrame(data)
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
+    df.to_csv(f.name, index=False)
+    f.close()
+    return f.name
+
+
+def _make_partial_year_csv(months: list[int] = None, freq: str = "h") -> str:
+    """Write a CSV covering only the specified months (< 4 seasons)."""
+    if months is None:
+        months = [6, 7, 8]  # summer only → missing 3 seasons
+    timestamps = []
+    for m in months:
+        start = pd.Timestamp(f"2023-{m:02d}-01")
+        end = start + pd.offsets.MonthEnd(1) + pd.Timedelta(hours=23)
+        timestamps.extend(pd.date_range(start, end, freq=freq).tolist())
+    n = len(timestamps)
+    data = {
+        "timestamp": timestamps,
+        "electricity_kwh": [100.0 + i * 0.01 for i in range(n)],
+    }
+    df = pd.DataFrame(data)
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
+    df.to_csv(f.name, index=False)
+    f.close()
+    return f.name
+
+
+@pytest.fixture
+def full_year_csv():
+    path = _make_full_year_csv()
+    yield path
+    Path(path).unlink(missing_ok=True)
+
+
+@pytest.fixture
+def partial_year_csv():
+    path = _make_partial_year_csv(months=[6, 7, 8])  # summer only
+    yield path
+    Path(path).unlink(missing_ok=True)
+
+
+class TestSeasonalSplit:
+    """Tests for ForecastingDataLoader.split_train_val_seasonal()."""
+
+    def test_total_rows_preserved(self, full_year_csv):
+        """Train + val rows must equal original row count."""
+        loader = ForecastingDataLoader(csv_path=full_year_csv)
+        total = len(loader.df)
+        train, val = loader.split_train_val_seasonal(validation_split=0.2)
+        assert len(train.df) + len(val.df) == total
+
+    def test_approximate_split_ratio(self, full_year_csv):
+        """Val fraction should be close to requested split across all seasons."""
+        loader = ForecastingDataLoader(csv_path=full_year_csv)
+        total = len(loader.df)
+        train, val = loader.split_train_val_seasonal(validation_split=0.2)
+        # Allow ±2 percentage points due to integer truncation per season
+        assert abs(len(val.df) / total - 0.2) < 0.02
+
+    def test_all_four_seasons_in_val(self, full_year_csv):
+        """Validation set must include rows from all four meteorological seasons."""
+        _MONTH_TO_SEASON = {
+            12: "winter", 1: "winter", 2: "winter",
+            3: "spring",  4: "spring", 5: "spring",
+            6: "summer",  7: "summer", 8: "summer",
+            9: "fall",   10: "fall",  11: "fall",
+        }
+        loader = ForecastingDataLoader(csv_path=full_year_csv)
+        _, val = loader.split_train_val_seasonal(validation_split=0.2)
+        seasons_in_val = set(val.df.index.month.map(_MONTH_TO_SEASON).unique())
+        assert seasons_in_val == {"winter", "spring", "summer", "fall"}
+
+    def test_all_four_seasons_in_train(self, full_year_csv):
+        """Training set must also include rows from all four seasons."""
+        _MONTH_TO_SEASON = {
+            12: "winter", 1: "winter", 2: "winter",
+            3: "spring",  4: "spring", 5: "spring",
+            6: "summer",  7: "summer", 8: "summer",
+            9: "fall",   10: "fall",  11: "fall",
+        }
+        loader = ForecastingDataLoader(csv_path=full_year_csv)
+        train, _ = loader.split_train_val_seasonal(validation_split=0.2)
+        seasons_in_train = set(train.df.index.month.map(_MONTH_TO_SEASON).unique())
+        assert seasons_in_train == {"winter", "spring", "summer", "fall"}
+
+    def test_no_overlap_between_train_and_val(self, full_year_csv):
+        """Train and val indices must be disjoint."""
+        loader = ForecastingDataLoader(csv_path=full_year_csv)
+        train, val = loader.split_train_val_seasonal(validation_split=0.2)
+        overlap = train.df.index.intersection(val.df.index)
+        assert len(overlap) == 0
+
+    def test_both_sorted_chronologically(self, full_year_csv):
+        """Both sub-loaders must have time-sorted indices."""
+        loader = ForecastingDataLoader(csv_path=full_year_csv)
+        train, val = loader.split_train_val_seasonal(validation_split=0.2)
+        assert train.df.index.is_monotonic_increasing
+        assert val.df.index.is_monotonic_increasing
+
+    def test_metadata_preserved(self, full_year_csv):
+        """Sub-loaders must carry the same column_mapping, frequency, csv_path."""
+        loader = ForecastingDataLoader(csv_path=full_year_csv)
+        train, val = loader.split_train_val_seasonal(validation_split=0.2)
+        for sub in (train, val):
+            assert sub.column_mapping == loader.column_mapping
+            assert sub.frequency == loader.frequency
+            assert sub.csv_path == loader.csv_path
+            assert sub.target_scaler is None
+            assert sub.covariate_scaler is None
+            assert sub.future_covariate_scaler is None
+
+    def test_fallback_on_partial_year_warns(self, partial_year_csv, caplog):
+        """When fewer than 4 seasons are present a WARNING is logged and the
+        result matches the sequential split."""
+        import logging
+        loader = ForecastingDataLoader(csv_path=partial_year_csv)
+        with caplog.at_level(logging.WARNING, logger="load_forecasting.core.data_loader"):
+            train_s, val_s = loader.split_train_val_seasonal(validation_split=0.2)
+
+        # At least one warning mentioning the fallback
+        assert any(
+            "Falling back" in r.message or "falling back" in r.message.lower()
+            for r in caplog.records
+        ), "Expected a fallback warning but none was emitted"
+
+        # Result must match sequential split
+        train_seq, val_seq = loader.split_train_val(validation_split=0.2)
+        assert len(train_s.df) == len(train_seq.df)
+        assert len(val_s.df) == len(val_seq.df)
+
+    def test_val_rows_are_latest_within_each_season(self, full_year_csv):
+        """Within each season, validation rows must be temporally after all
+        training rows of the same season."""
+        _MONTH_TO_SEASON = {
+            12: "winter", 1: "winter", 2: "winter",
+            3: "spring",  4: "spring", 5: "spring",
+            6: "summer",  7: "summer", 8: "summer",
+            9: "fall",   10: "fall",  11: "fall",
+        }
+        loader = ForecastingDataLoader(csv_path=full_year_csv)
+        train, val = loader.split_train_val_seasonal(validation_split=0.2)
+
+        for season in ("winter", "spring", "summer", "fall"):
+            train_season = train.df[train.df.index.month.map(_MONTH_TO_SEASON) == season]
+            val_season = val.df[val.df.index.month.map(_MONTH_TO_SEASON) == season]
+            if train_season.empty or val_season.empty:
+                continue
+            # Last training timestamp must be before first validation timestamp
+            assert train_season.index.max() < val_season.index.min(), (
+                f"Season '{season}': val rows overlap with or precede train rows"
+            )

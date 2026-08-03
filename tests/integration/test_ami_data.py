@@ -24,7 +24,7 @@ import pytest
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from load_forecasting.tools.forecasting_tools import (
+from load_forecasting.tools import (
     train_forecast_model,
     evaluate_forecast_model,
     inspect_data,
@@ -164,7 +164,7 @@ class TestCityLevel:
     """Pipeline validation on district-level (city aggregate) AMI data."""
 
     async def test_inspect_data(self, city_merged_csv, ami_model_dir):
-        result = await inspect_data(
+        result = inspect_data(
             csv_path=city_merged_csv,
             column_mapping=_city_mapping(),
         )
@@ -178,7 +178,7 @@ class TestCityLevel:
         assert result["time_range"]["coverage_pct"] >= 99.0
 
     async def test_train(self, city_merged_csv, ami_model_dir):
-        result = await train_forecast_model(
+        result = train_forecast_model(
             csv_path=city_merged_csv,
             model_type="LinearRegression",
             lookback_hours=24,
@@ -202,7 +202,7 @@ class TestCityLevel:
         assert summary["future_covariate_columns"] == []
 
     async def test_train_and_evaluate(self, city_merged_csv, ami_model_dir):
-        train_result = await train_forecast_model(
+        train_result = train_forecast_model(
             csv_path=city_merged_csv,
             model_type="LinearRegression",
             lookback_hours=24,
@@ -213,7 +213,7 @@ class TestCityLevel:
         )
         assert train_result["success"] is True, train_result.get("error")
 
-        eval_result = await evaluate_forecast_model(
+        eval_result = evaluate_forecast_model(
             model_id=train_result["model_id"],
             csv_path=city_merged_csv,
         )
@@ -231,7 +231,7 @@ class TestSubstationLevel:
     """Pipeline validation on substation-level AMI data (GLENDOVEER substation)."""
 
     async def test_inspect_data(self, substation_merged_csv, ami_model_dir):
-        result = await inspect_data(
+        result = inspect_data(
             csv_path=substation_merged_csv,
             column_mapping=_substation_mapping(),
         )
@@ -242,7 +242,7 @@ class TestSubstationLevel:
         assert result["time_range"]["coverage_pct"] >= 99.0
 
     async def test_train(self, substation_merged_csv, ami_model_dir):
-        result = await train_forecast_model(
+        result = train_forecast_model(
             csv_path=substation_merged_csv,
             model_type="LinearRegression",
             lookback_hours=24,
@@ -256,7 +256,7 @@ class TestSubstationLevel:
         assert result["data_summary"]["target_column"] == _SUBSTATION_TARGET
 
     async def test_train_and_evaluate(self, substation_merged_csv, ami_model_dir):
-        train_result = await train_forecast_model(
+        train_result = train_forecast_model(
             csv_path=substation_merged_csv,
             model_type="LinearRegression",
             lookback_hours=24,
@@ -267,7 +267,7 @@ class TestSubstationLevel:
         )
         assert train_result["success"] is True, train_result.get("error")
 
-        eval_result = await evaluate_forecast_model(
+        eval_result = evaluate_forecast_model(
             model_id=train_result["model_id"],
             csv_path=substation_merged_csv,
         )
@@ -276,7 +276,7 @@ class TestSubstationLevel:
 
     async def test_naive_baseline(self, substation_merged_csv, ami_model_dir):
         """NaiveSeasonal should also train successfully on real data."""
-        result = await train_forecast_model(
+        result = train_forecast_model(
             csv_path=substation_merged_csv,
             model_type="NaiveSeasonal",
             lookback_hours=24,
@@ -297,7 +297,7 @@ class TestFeederLevel:
     """Pipeline validation on feeder-level AMI data (GLENDOVEER-13599 circuit)."""
 
     async def test_inspect_data(self, feeder_merged_csv, ami_model_dir):
-        result = await inspect_data(
+        result = inspect_data(
             csv_path=feeder_merged_csv,
             column_mapping=_feeder_mapping(),
         )
@@ -308,7 +308,7 @@ class TestFeederLevel:
         assert result["time_range"]["coverage_pct"] >= 99.0
 
     async def test_train(self, feeder_merged_csv, ami_model_dir):
-        result = await train_forecast_model(
+        result = train_forecast_model(
             csv_path=feeder_merged_csv,
             model_type="LinearRegression",
             lookback_hours=24,
@@ -322,7 +322,7 @@ class TestFeederLevel:
         assert result["data_summary"]["target_column"] == _FEEDER_TARGET
 
     async def test_train_and_evaluate(self, feeder_merged_csv, ami_model_dir):
-        train_result = await train_forecast_model(
+        train_result = train_forecast_model(
             csv_path=feeder_merged_csv,
             model_type="LinearRegression",
             lookback_hours=24,
@@ -333,7 +333,7 @@ class TestFeederLevel:
         )
         assert train_result["success"] is True, train_result.get("error")
 
-        eval_result = await evaluate_forecast_model(
+        eval_result = evaluate_forecast_model(
             model_id=train_result["model_id"],
             csv_path=feeder_merged_csv,
         )
@@ -361,7 +361,7 @@ class TestWeatherFutureCovariates:
     ):
         """Train LinearRegression using T_out as a future covariate."""
         mapping = _city_mapping(future_covs=_FUTURE_WEATHER_COLS)
-        result = await train_forecast_model(
+        result = train_forecast_model(
             csv_path=city_merged_csv,
             model_type="LinearRegression",
             lookback_hours=24,
@@ -384,7 +384,7 @@ class TestWeatherFutureCovariates:
         from load_forecasting.core.model_registry import ModelRegistry
 
         mapping = _city_mapping(future_covs=_FUTURE_WEATHER_COLS)
-        train_result = await train_forecast_model(
+        train_result = train_forecast_model(
             csv_path=city_merged_csv,
             model_type="LinearRegression",
             lookback_hours=24,
@@ -405,7 +405,7 @@ class TestWeatherFutureCovariates:
     ):
         """evaluate_forecast_model must work when model was trained with future covariates."""
         mapping = _city_mapping(future_covs=_FUTURE_WEATHER_COLS)
-        train_result = await train_forecast_model(
+        train_result = train_forecast_model(
             csv_path=city_merged_csv,
             model_type="LinearRegression",
             lookback_hours=24,
@@ -416,7 +416,7 @@ class TestWeatherFutureCovariates:
         )
         assert train_result["success"] is True, train_result.get("error")
 
-        eval_result = await evaluate_forecast_model(
+        eval_result = evaluate_forecast_model(
             model_id=train_result["model_id"],
             csv_path=city_merged_csv,
             # column_mapping loaded from metadata; future covariate mapping is reused

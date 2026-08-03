@@ -1,0 +1,175 @@
+# Generate Forecast Specification
+# For AlphaBuilding-Agents SpecRegistry and AI discovery
+
+id: forecasting.generate_forecast
+version: "1.0.0"
+mcp_server: load_forecasting
+mcp_tool: generate_forecast
+
+category: forecasting
+tags: [load_forecasting, inference, prediction, forward_forecast, darts]
+description: >
+  Generate a forward forecast from a trained model using recent context data.
+  Takes a model ID and a CSV with recent history and returns predictions for
+  the next horizon_hours hours.  Use train_forecast_model first to create the
+  model, then call this tool for live inference.
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+inputs:
+  # --- Model Selection ---
+  - name: model_id
+    type: string
+    required: true
+    description: >
+      ID of a trained model (returned from train_forecast_model or tune_model).
+      Use list_models to see available models.
+    example: "Building_33_LinearRegression_20250124_143022"
+
+  # --- Context Data ---
+  - name: csv_path
+    type: string
+    required: true
+    delivery_mode: file_reference
+    description: >
+      Path to CSV with recent context data. Must have the same column structure
+      as the training data.
+
+      For models WITHOUT future covariates: provide at least lookback_hours of
+      recent history for the target (and any past covariate) columns.
+
+      For models WITH future covariates (e.g. weather forecasts): extend the
+      future-covariate columns horizon_hours rows beyond the last non-null
+      target row. Target and past-covariate columns can be absent or NaN for
+      those future rows.
+
+      For best accuracy, provide at least 168 hours (7 days) of context so that
+      lag features (24h/48h/168h) are computed from real data rather than
+      back-filled estimates.
+    example: "/data/building_33_recent_48h.csv"
+
+  - name: column_mapping
+    type: object
+    required: false
+    description: >
+      Column role mapping. If not provided, the mapping stored in the model
+      metadata from training is used. Only specify if the CSV has different
+      column names than the training data.
+    properties:
+      datetime:
+        type: string
+        description: Column containing timestamps
+        example: "timestamp"
+      target:
+        type: string
+        description: Column containing load values
+        example: "Electricity_kWh"
+      past_covariates:
+        type: array
+        items: { type: string }
+        description: Past covariate columns (e.g. measured weather)
+        example: ["T_out"]
+      future_covariates:
+        type: array
+        items: { type: string }
+        description: Future covariate columns (must extend horizon_hours beyond last target)
+        example: ["T_out_forecast"]
+
+  # --- Horizon Override ---
+  - name: horizon_hours
+    type: integer
+    required: false
+    minimum: 1
+    maximum: 96
+    description: >
+      Forecast horizon in hours. Overrides the horizon the model was trained
+      with. If not provided, uses the training horizon. Maximum raised to 96h
+      to support the Li et al. (2025) paper's 96h evaluation horizon.
+    example: 6
+
+  # --- Output Options ---
+  - name: output_csv_path
+    type: string
+    required: false
+    description: Optional path to write predictions as a CSV file.
+    example: "/data/forecast_output.csv"
+
+# ==============================================================================
+# OUTPUTS
+# ==============================================================================
+outputs:
+  success:
+    type: boolean
+    description: Whether forecast generation completed successfully
+
+  error:
+    type: string
+    description: Error message if success=false
+
+  model_id:
+    type: string
+    description: Model that was used for forecasting
+
+  model_type:
+    type: string
+    description: Type of model used (e.g. LinearRegression, XGBoost)
+
+  forecast_horizon_hours:
+    type: integer
+    description: Number of hours forecasted
+
+  predictions:
+    type: array
+    description: >
+      Predicted load values. Unlike evaluate_forecast_model, there is no
+      'actual' field — these are true forward predictions.
+    items:
+      type: object
+      properties:
+        datetime: { type: string, format: datetime, description: "Forecasted timestamp" }
+        predicted_load: { type: number, description: "Predicted load in original units" }
+
+  forecast_start:
+    type: string
+    format: datetime
+    description: Timestamp of the first forecasted step
+
+  forecast_end:
+    type: string
+    format: datetime
+    description: Timestamp of the last forecasted step
+
+  context_summary:
+    type: object
+    description: Summary of the context window used
+    properties:
+      context_rows: { type: integer, description: "Number of context rows used" }
+      context_start: { type: string, format: datetime }
+      context_end: { type: string, format: datetime }
+      lookback_steps_required: { type: integer, description: "Minimum steps required by the model" }
+
+  context_warning:
+    type: string
+    description: >
+      Optional warning if context is shorter than recommended (168h). Lag
+      features may be less accurate in this case, but the model will still run.
+
+  output_csv_path:
+    type: string
+    description: Path to saved CSV if output_csv_path was provided
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+notes:
+  - "Use list_models to find available model IDs before calling this tool"
+  - "Column mapping from training is automatically reused if not specified"
+  - "For models without future covariates: just provide a recent context CSV"
+  - "For models with future covariates: extend covariate columns beyond the last target row"
+  - "Local models (NaiveMean, NaiveSeasonal, NaiveMovingAverage) are refitted on the context window"
+  - "ARIMA uses the context window to update its internal state before predicting"
+  - "Global models (LinearRegression, XGBoost, LSTM, TFT) require at least lookback_hours of context"
+  - "Providing 168+ hours of context ensures lag features are computed from real data"
+  - "Predictions are in the same units as the training target column"
+  - "Use backtest_model to assess historical performance before deploying generate_forecast"

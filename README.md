@@ -1,193 +1,536 @@
-# LoadForecasting-MCP
+# STLF-MCP-Server
 
-MCP server for building load forecasting with time-series models.
+A Model Context Protocol (MCP) server that provides **15 tools** for
+**short-term load forecasting (STLF)** of building and grid electrical demand.
+This server enables AI assistants and other MCP clients to inspect data, merge
+weather, train, tune, evaluate, backtest, and forecast electrical loads — and
+generate interactive HTML reports — through a standardized interface.
+
+Built on [Darts](https://github.com/unit8co/darts) for the modelling and
+[FastMCP](https://github.com/jlowin/fastmcp) for the server. Methodology aligns
+with Li et al. (2025), *Energy & Buildings* 344.
+
+> **Version**: 0.1.0
+> **Python**: 3.10–3.12 (3.13 is not supported — numba/llvmlite incompatibility)
+
+## 📑 Table of Contents
+
+- [Overview](#overview)
+- [Installation](#installation)
+  - [Using the MCP Server](#using-the-mcp-server)
+    - [Claude Desktop](#claude-desktop)
+    - [VS Code](#vs-code)
+    - [Cursor](#cursor)
+  - [Development Setup](#development-setup)
+  - [Streamable HTTP Transport](#streamable-http-transport)
+- [Available Tools](#available-tools)
+- [Usage Examples](#usage-examples)
+- [Architecture](#architecture)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
 
 ## Overview
 
-This MCP server provides tools for training, evaluating, and managing time-series forecasting models for building electrical loads. It uses [Darts](https://github.com/unit8co/darts) for forecasting and integrates with the AlphaBuilding platform via the Model Context Protocol (MCP).
+STLF-MCP-Server makes time-series load forecasting accessible to AI assistants
+and automation tools through the Model Context Protocol. It wraps a full
+forecasting workflow — from raw CSV inspection to trained models, evaluation,
+and forward forecasts — as MCP tools any client can call.
 
-## Features
+**Key Features:**
 
-- **Train forecasting models** on historical building load data
-- **Evaluate models** on test data with comprehensive metrics
-- **Model registry** for persistent storage and versioning
-- **Auto-detection** of column mappings from CSV files
-- **Multiple model types**: Naive baselines, Linear Regression (Phase 1), XGBoost, LSTM (Phase 4)
+- 📊 **12 model types**: NaiveMean, NaiveSeasonal, NaiveMovingAverage,
+  LinearRegression, XGBoost, LSTM, ARIMA, TFT, TiDE, TSMixer, TimesFM, and
+  TimesFM+Residual (TimesFM 2.5 backbone with a Ridge residual regressor).
+- 🎯 **Probabilistic forecasting**: optional quantile (P10/P50/P90) prediction
+  intervals for XGBoost, LSTM, TFT, TiDE, and TSMixer, with pinball loss /
+  coverage / interval-width metrics.
+- 🌦️ **Weather integration**: live Open-Meteo forecast fetch plus a DST-safe
+  merge into your load CSV.
+- 🛠️ **Automatic feature engineering**: cyclic calendar features (hour,
+  day-of-week, month) and 24/48/168h lag features are auto-injected.
+- 📈 **Rigorous evaluation**: RMSE, MAE, MAPE, CV-RMSE, R², plus peak-day
+  PMAPE/PTE metrics.
+- 🔁 **Rolling-window backtesting** with h-step-ahead error degradation.
+- 🔍 **Hyperparameter tuning** via Optuna.
+- 🗂️ **Batch / multi-series** fan-out over many feeders or meters (fault
+  tolerant).
+- 🖥️ **Self-contained HTML reports**: evaluation, backtest, and live inference
+  dashboards (all JS/CSS inlined; open with `file://`, no server required).
+- 💾 **Model registry** for persistent storage and versioning.
 
 ## Installation
 
-```bash
-# From the LoadForecasting-MCP directory
-pip install -e .
+### Using the MCP Server
 
-# Or with development dependencies
+**Prerequisites (all clients):**
+
+- Python 3.10–3.12 on your PATH
+- The repository cloned locally and its dependencies installed
+  (see [Development Setup](#development-setup))
+- `git` on your PATH
+
+Choose the appropriate setup for your AI assistant or IDE.
+
+#### Claude Desktop
+
+1. **Install dependencies** (one-time setup):
+
+   ```bash
+   git clone https://github.com/LBNL-HongTeam/STLF-MCP-Server.git
+   cd STLF-MCP-Server
+   uv sync
+   ```
+
+2. **Locate the Claude Desktop config file** for your OS:
+
+   - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+   - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+   Create the file if it does not exist, then add:
+
+   ```json
+   {
+     "mcpServers": {
+       "load_forecasting": {
+         "command": "uv",
+         "args": [
+           "run",
+           "--directory", "/path/to/STLF-MCP-Server",
+           "python", "main.py"
+         ]
+       }
+     }
+   }
+   ```
+
+   **Important**: Replace `/path/to/STLF-MCP-Server` with the absolute path to
+   your cloned repo (Windows users: use double backslashes in JSON, e.g.
+   `C:\\Users\\yourname\\code\\STLF-MCP-Server`).
+
+3. **Restart Claude Desktop**. The `load_forecasting` server should appear in
+   the MCP servers panel.
+
+4. **Verify**: in a new chat, ask *"List the load forecasting MCP tools you have
+   access to."* You should see tools like `train_forecast_model`,
+   `evaluate_forecast_model`, and `inspect_data`. If not, check
+   [Troubleshooting](#troubleshooting).
+
+#### VS Code
+
+VS Code 1.102+ ships native MCP support. Config goes in `.vscode/mcp.json` at
+the workspace root (or in user settings under `"mcp"`).
+
+1. **Install dependencies** (same as Claude Desktop step 1 above).
+
+2. **Create `.vscode/mcp.json`** in your project:
+
+   ```json
+   {
+     "servers": {
+       "load_forecasting": {
+         "command": "uv",
+         "args": [
+           "run",
+           "--directory", "${workspaceFolder}",
+           "python", "main.py"
+         ]
+       }
+     }
+   }
+   ```
+
+3. **Reload VS Code** (`Ctrl/Cmd+Shift+P` → *Developer: Reload Window*). Open the
+   Chat view and confirm the `load_forecasting` MCP server shows as *Running*.
+
+4. **Verify**: ask the chat *"What load forecasting tools are available?"* — you
+   should see the tool list.
+
+#### Cursor
+
+1. **Install dependencies** (same as Claude Desktop step 1 above).
+
+2. **Locate the Cursor MCP config file** for your OS:
+
+   - **macOS/Linux**: `~/.cursor/mcp.json`
+   - **Windows**: `%USERPROFILE%\.cursor\mcp.json`
+
+   Create the file if it does not exist, then add:
+
+   ```json
+   {
+     "mcpServers": {
+       "load_forecasting": {
+         "command": "uv",
+         "args": [
+           "run",
+           "--directory", "/path/to/STLF-MCP-Server",
+           "python", "main.py"
+         ]
+       }
+     }
+   }
+   ```
+
+   **Important**: Replace `/path/to/STLF-MCP-Server` with the absolute path to
+   your cloned repo (Windows users: use double backslashes in JSON).
+
+3. **Restart Cursor**. Open *Settings → MCP* and confirm the `load_forecasting`
+   server is listed as connected.
+
+4. **Verify**: ask Cursor chat *"What load forecasting tools are available?"* —
+   you should see the tool list.
+
+### Development Setup
+
+For contributors who want to modify or extend the MCP server.
+[`uv`](https://github.com/astral-sh/uv) is the package manager; the lockfile is
+`uv.lock`.
+
+**Prerequisites:**
+
+- Python 3.10–3.12
+- [uv package manager](https://github.com/astral-sh/uv)
+
+```bash
+# Clone and install
+git clone https://github.com/LBNL-HongTeam/STLF-MCP-Server.git
+cd STLF-MCP-Server
+uv sync
+
+# Or with pip (development dependencies)
 pip install -e ".[dev]"
-```
 
-## Usage
-
-### STDIO Mode (Claude Desktop)
-
-```bash
+# Run the server for testing (STDIO mode)
 python main.py
 ```
 
-Add to Claude Desktop config (`~/.claude/claude_desktop_config.json`):
+PyTorch and PyTorch Lightning are pulled in automatically and are required for
+the LSTM, TFT, TiDE, TSMixer, and TimesFM models.
+
+### Streamable HTTP Transport
+
+By default the server runs over **stdio**, which is what every MCP client config
+in this README uses. The server can also run over **streamable HTTP** — useful
+for the AlphaBuilding-Agents integration or connecting clients that expect an
+HTTP MCP endpoint.
+
+```bash
+python main.py --http        # port 8003 (default)
+python main.py --http 8080   # custom port
+# or
+MCP_TRANSPORT=http python main.py
+```
+
+The server listens at `http://<host>:8003/mcp`. Connect an MCP client by
+replacing the stdio command stanza with an HTTP one:
 
 ```json
 {
   "mcpServers": {
     "load_forecasting": {
-      "command": "python",
-      "args": ["/path/to/LoadForecasting-MCP/main.py"]
+      "type": "http",
+      "url": "http://localhost:8003/mcp"
     }
   }
 }
 ```
 
-### HTTP Mode (AlphaBuilding-Agents)
+> **Note**: HTTP mode binds `0.0.0.0` with **no authentication or TLS**. It is
+> intended for trusted internal networks, not public exposure.
 
-```bash
-python main.py --http
-# or
-MCP_TRANSPORT=http python main.py
-```
+## Available Tools
 
-Server runs on port 8003 by default.
+The server provides **15 tools** organized into **6 categories**. Full parameter
+and return-shape documentation lives in each tool's function signature (FastMCP
+derives the JSON schema from it) and in the YAML specs under
+`src/load_forecasting/specs/`.
 
-## Tools
+### 🗂️ Data Preparation (3 tools)
 
-### `train_forecast_model`
+- `inspect_data` - Profile a CSV before training: detect column roles, infer
+  frequency, compute per-column stats, flag gaps/anomalies, suggest features
+- `merge_covariates` - Left-join a covariate CSV (e.g. weather) into a load CSV
+  with automatic timezone conversion and DST handling
+- `fetch_weather_forecast` - Fetch live weather from the Open-Meteo API,
+  formatted to slot into `generate_forecast` as future covariates
 
-Train a time-series forecasting model on historical data.
+### 🎓 Training & Tuning (2 tools)
 
-**Inputs:**
-- `csv_path` (required): Path to CSV with datetime and load data
-- `model_type`: NaiveMean, NaiveSeasonal, NaiveMovingAverage, LinearRegression
-- `lookback_hours`: Hours of history for input (default: 24)
-- `horizon_hours`: Hours ahead to forecast (default: 6)
-- `frequency`: Data frequency - 15min, 30min, h (default: h)
-- `validation_split`: Fraction for validation (default: 0.2)
-- `building_name`: Building identifier
-- `column_mapping`: Map CSV columns to roles
+- `train_forecast_model` - Train a model on historical load data (all 12 model
+  types; optional probabilistic quantile fitting)
+- `tune_model` - Hyperparameter-tune a model with Optuna and register the best
+  result
 
-**Outputs:**
-- `model_id`: Unique identifier for the trained model
-- `training_metrics`: RMSE, MAE, MAPE on training data
-- `validation_metrics`: RMSE, MAE, MAPE, CV-RMSE, R² on validation data
-- `data_summary`: Statistics about input data
+### 📏 Evaluation & Backtesting (2 tools)
 
-### `evaluate_forecast_model`
+- `evaluate_forecast_model` - Evaluate a trained model on test data
+  (RMSE/MAE/MAPE/CV-RMSE/R², optional peak-day and probabilistic metrics)
+- `backtest_model` - Rolling-window backtest with configurable stride and start
+  position across many historical windows
 
-Evaluate a trained model on new/test data.
+### 🔮 Forecasting (3 tools)
 
-**Inputs:**
-- `model_id` (required): ID from training
-- `csv_path` (required): Path to test data CSV
-- `return_predictions`: Include predictions in output (default: true)
-- `output_csv_path`: Save predictions to CSV
-- `include_residual_analysis`: Add residual statistics
+- `generate_forecast` - Generate a forward forecast from recent context data;
+  emits quantile bands for probabilistic models
+- `batch_train_forecast_models` - Train one model per series across many series
+  (job list or wide CSV of meter columns); fault tolerant
+- `batch_generate_forecast` - Generate forward forecasts for many trained models
+  in one call
 
-**Outputs:**
-- `test_metrics`: Performance on test data
-- `comparison_to_validation`: Compare to validation metrics
-- `predictions`: Timestamped predictions with residuals
+### 📊 Reporting (3 tools)
 
-### `list_models`
+- `generate_evaluation_report` - Self-contained interactive HTML evaluation
+  report
+- `generate_backtest_report` - Self-contained HTML backtest report with a
+  forecast-playback slider and h-step error charts
+- `generate_inference_dashboard` - Live inference dashboard that refreshes
+  weather in the browser
 
-List trained models in the registry.
+### 🔎 Registry & Discovery (2 tools)
 
-**Inputs:**
-- `building_name`: Filter by building
-- `model_type`: Filter by model type
-- `sort_by`: created_at, validation_cv_rmse, model_type
-- `limit`: Maximum results (default: 20)
+- `list_models` - List trained models in the registry, with filtering and
+  sorting
+- `get_algorithm_specifications` - Return all YAML algorithm specs for
+  agent-side model selection
 
-### `get_algorithm_specifications`
+## Usage Examples
 
-Return all YAML specs for AI agent discovery.
+### Basic Workflow
 
-## Data Format
+1. **Inspect the data** before training:
 
-### Input CSV
+   ```json
+   {
+     "tool": "inspect_data",
+     "arguments": {
+       "csv_path": "data/building_33_hourly.csv",
+       "frequency": "h"
+     }
+   }
+   ```
 
-The tool expects a CSV with:
-- A datetime column (auto-detected: timestamp, datetime, date, time)
-- A target column for load (auto-detected: kwh, load, power, energy, electricity)
-- Optional covariate columns (auto-detected: temp, humidity, solar, wind)
+2. **Train a model**:
 
-Example:
-```csv
-timestamp,electricity_kwh,outdoor_temp
-2023-01-01 00:00:00,150.5,45.2
-2023-01-01 01:00:00,142.3,44.8
-...
-```
+   ```json
+   {
+     "tool": "train_forecast_model",
+     "arguments": {
+       "csv_path": "data/building_33_hourly.csv",
+       "model_type": "XGBoost",
+       "lookback_hours": 48,
+       "horizon_hours": 24,
+       "building_name": "Building_33"
+     }
+   }
+   ```
 
-### Column Mapping
+3. **Evaluate the trained model**:
 
-If auto-detection fails, provide explicit mapping:
+   ```json
+   {
+     "tool": "evaluate_forecast_model",
+     "arguments": {
+       "model_id": "Building_33_XGBoost_20250124_143022",
+       "csv_path": "data/building_33_test.csv"
+     }
+   }
+   ```
 
-```python
+4. **Generate a forward forecast**:
+
+   ```json
+   {
+     "tool": "generate_forecast",
+     "arguments": {
+       "model_id": "Building_33_XGBoost_20250124_143022",
+       "csv_path": "data/building_33_recent.csv",
+       "horizon_hours": 24
+     }
+   }
+   ```
+
+### Advanced Features
+
+**Probabilistic (interval) forecasting** — train with quantiles, then forecast
+with prediction bands:
+
+```json
 {
-    "datetime": "timestamp",
-    "target": "electricity_kwh",
-    "past_covariates": ["outdoor_temp"]
+  "tool": "train_forecast_model",
+  "arguments": {
+    "csv_path": "data/feeder.csv",
+    "model_type": "XGBoost",
+    "lookback_hours": 48,
+    "horizon_hours": 24,
+    "probabilistic": true,
+    "quantiles": [0.1, 0.5, 0.9]
+  }
 }
 ```
 
-## Metrics
-
-| Metric | Description | Good Value |
-|--------|-------------|------------|
-| CV-RMSE | Coefficient of Variation of RMSE | < 15% excellent, 15-25% acceptable |
-| R² | Coefficient of determination | > 0.8 |
-| MAPE | Mean Absolute Percentage Error | < 10% |
-
-## Model Registry
-
-Trained models are stored in `./models/` (configurable via `LOAD_FORECASTING_MODEL_DIR`).
-
-```
-models/
-├── registry.json                     # Index of all models
-└── Building_33_LinearRegression_.../
-    ├── model.pkl                     # Trained Darts model
-    ├── metadata.json                 # Config, metrics, data info
-    └── scalers/
-        ├── target_scaler.pkl
-        └── covariate_scaler.pkl
+```json
+{
+  "tool": "generate_forecast",
+  "arguments": {
+    "model_id": "feeder_XGBoost_20250124_143022",
+    "csv_path": "data/feeder_recent.csv",
+    "num_samples": 200
+  }
+}
 ```
 
-## Environment Variables
+**Weather-aware forecasting** — fetch weather, merge it, then forecast:
+
+```json
+{
+  "tool": "fetch_weather_forecast",
+  "arguments": {
+    "latitude": 37.87,
+    "longitude": -122.27,
+    "forecast_hours": 48,
+    "past_hours": 48,
+    "timezone": "America/Los_Angeles",
+    "output_csv_path": "data/weather.csv"
+  }
+}
+```
+
+```json
+{
+  "tool": "merge_covariates",
+  "arguments": {
+    "load_csv_path": "data/feeder_recent.csv",
+    "covariate_csv_path": "data/weather.csv",
+    "output_csv_path": "data/feeder_with_weather.csv"
+  }
+}
+```
+
+**Batch multi-series training** — one model per meter column of a wide AMI
+export:
+
+```json
+{
+  "tool": "batch_train_forecast_models",
+  "arguments": {
+    "csv_path": "data/ami_wide.csv",
+    "target_columns": ["feeder_A", "feeder_B", "feeder_C"],
+    "datetime_col": "timestamp",
+    "model_type": "XGBoost",
+    "lookback_hours": 48,
+    "horizon_hours": 24
+  }
+}
+```
+
+**Generate an interactive HTML report**:
+
+```json
+{
+  "tool": "generate_evaluation_report",
+  "arguments": {
+    "model_id": "Building_33_XGBoost_20250124_143022",
+    "csv_path": "data/building_33_test.csv",
+    "output_html_path": "reports/building_33_eval.html"
+  }
+}
+```
+
+### Using with MCP Inspector
+
+Test tools interactively (requires Node.js 18+):
+
+```bash
+npx @modelcontextprotocol/inspector uv run python main.py
+```
+
+The Inspector opens a browser UI where you can list tools and invoke them with
+JSON arguments — useful for sanity-checking the install before wiring up a
+client.
+
+## Architecture
+
+The server follows a layered architecture:
+
+```
+┌─────────────────────────┐
+│   MCP Protocol Layer    │  FastMCP server handling client communications
+├─────────────────────────┤
+│      Tools Layer        │  15 tools organized into 6 categories
+├─────────────────────────┤
+│       Core Layer        │  Data loader, trainer, evaluator, model registry,
+│                         │  tuning (Optuna), weather fetcher, spec loader
+├─────────────────────────┤
+│    Darts Integration    │  Time-series models + covariate handling
+└─────────────────────────┘
+```
+
+**Project Structure:**
+
+```
+STLF-MCP-Server/
+├── main.py                       # Entry point (stdio / HTTP transport)
+├── src/load_forecasting/
+│   ├── server.py                 # FastMCP server + tool registration
+│   ├── core/                     # data_loader, trainer, evaluator,
+│   │                             #   model_registry, tuning, weather_fetcher,
+│   │                             #   spec_loader, frequency_utils
+│   ├── tools/                    # MCP tool implementations by workflow stage
+│   ├── specs/                    # YAML algorithm specs (agent discovery)
+│   └── reporting/                # Self-contained HTML report generation
+├── models/                       # Trained models + registry.json (runtime)
+├── reports/                      # Generated HTML reports (runtime)
+└── tests/                        # Unit + integration tests
+```
+
+See `AGENTS.md` for architecture internals and non-obvious gotchas (covariate
+handling, hours-vs-steps conversion, MPS/OpenMP caveats, spec/registry
+resolution).
+
+## Configuration
+
+The server uses sensible defaults. Configuration can be customized via
+environment variables (copy `.env.example` → `.env` for local overrides):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LOAD_FORECASTING_MODEL_DIR` | `./models` | Model storage directory |
-| `MCP_TRANSPORT` | `stdio` | Transport mode (stdio or http) |
-| `MCP_HTTP_PORT` | `8003` | HTTP port |
-| `LOG_LEVEL` | `INFO` | Logging level |
+| `LOAD_FORECASTING_MODEL_DIR` | `./models` | Model storage directory. |
+| `MCP_TRANSPORT` | `stdio` | Transport mode (`stdio` or `http`). |
+| `MCP_HTTP_PORT` | `8003` | HTTP port. |
+| `LOG_LEVEL` | `INFO` | Python logging level. |
+| `KMP_DUPLICATE_LIB_OK` | `TRUE` (set by `main.py`) | Tolerate duplicate OpenMP runtime (xgboost + torch on macOS); must be set pre-import. |
+| `OMP_NUM_THREADS` | `1` (set by `main.py`) | Cap OpenMP thread pool. |
 
-## Development
+## Troubleshooting
 
-```bash
-# Run tests
-pytest
+**Common Issues:**
 
-# Run specific test
-pytest tests/test_data_loader.py -v
-```
+1. **"Module not found"**: Run `uv sync` (or `pip install -e ".[dev]"`) to
+   install dependencies.
+2. **Python 3.13 errors on install**: Python 3.13 is not supported due to a
+   numba/llvmlite incompatibility. Use Python 3.10–3.12.
+3. **Process crashes (SIGSEGV) on macOS after mixing XGBoost and Torch models**:
+   an OpenMP duplicate-runtime conflict. `main.py` sets `KMP_DUPLICATE_LIB_OK=TRUE`
+   and `OMP_NUM_THREADS=1` automatically; if you launch the server without
+   `main.py`, export both env vars yourself before importing torch/xgboost.
+4. **LSTM/TFT wrong results or NaN losses on Apple Silicon (MPS)**: known
+   PyTorch MPS bugs. Workarounds — for LSTM set `dropout=0` or `n_rnn_layers=1`;
+   for TFT pass `accelerator="cpu"` via `model_kwargs`.
+5. **TimesFM first run is slow / downloads data**: TimesFM 2.5 downloads ~800MB
+   of pretrained weights from HuggingFace Hub on first use.
+6. **"Data frequency mismatch" during evaluation**: the CSV frequency differs
+   from the model's training frequency. Provide a matching CSV or retrain.
 
-## Roadmap
+## Contributing
 
-| Phase | Features |
-|-------|----------|
-| 1 | train_forecast_model, get_algorithm_specifications |
-| 2 | evaluate_forecast_model, list_models |
-| 3 | generate_forecast (predict future) |
-| 4 | XGBoost, ARIMA, LSTM, TFT models |
-| 5 | compare_models (AutoML-lite) |
+1. Fork the repository
+2. Create a feature branch
+3. Make changes with tests
+4. Run the test suite:
 
-## License
+   ```bash
+   pytest
+   ```
 
-MIT
+5. Submit a pull request

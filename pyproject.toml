@@ -1,37 +1,48 @@
 [project]
-name = "load-forecasting-mcp"
+name = "STLF_MCP"
 version = "0.1.0"
 description = "MCP server for building load forecasting with time-series models"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
-license = { text = "MIT" }
 authors = [
-    { name = "AlphaBuilding Team" }
+    { name = "LBNL" }
 ]
 keywords = ["mcp", "forecasting", "time-series", "building", "energy", "darts"]
 
 dependencies = [
-    "darts>=0.27.0",
-    "fastmcp>=2.13.0",
-    "pandas>=2.0.0",
-    "pyyaml>=6.0",
-    "pydantic>=2.0.0",
-    "numpy>=1.24.0",
-    "scikit-learn>=1.3.0",
+    "darts==0.44.0",
+    "fastmcp==3.2.4",
+    "pandas==3.0.2",
+    "pyyaml==6.0.3",
+    "pydantic==2.13.3",
+    "numpy==2.4.4",
+    "scikit-learn==1.8.0",
     # Pin newer numba/llvmlite for Python 3.11/3.12 compatibility
-    "numba>=0.59.0",
-    "llvmlite>=0.42.0",
+    "numba==0.65.1",
+    "llvmlite==0.47.0",
+    # Model development: gradient boosting + deep learning + hyperparameter tuning
+    "xgboost==3.2.0",
+    "torch==2.11.0",
+    "pytorch-lightning==2.6.1",
+    "optuna==4.8.0",
+    # Required by Darts TimesFM 2.5 to download pretrained weights from HuggingFace Hub
+    "huggingface_hub>=0.24.0",
+    # Required to load HuggingFace weights via Darts' huggingface_connector
+    "safetensors>=0.4.0",
+    # Templating for self-contained HTML evaluation reports
+    "jinja2==3.1.6",
+    # HTTP client for Open-Meteo weather API
+    "httpx==0.28.1",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-    "httpx>=0.24.0",
+    "pytest==9.0.3",
+    "pytest-asyncio==1.3.0",
 ]
 
 [project.scripts]
-load-forecasting-mcp = "load_forecasting.server:main"
+load-forecasting-mcp = "load_forecasting.server:run_server"
 
 [build-system]
 requires = ["hatchling"]
@@ -39,6 +50,31 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/load_forecasting"]
+
+# Include non-Python package data in the wheel.
+# hatchling only auto-includes .py files; everything else must be listed here.
+[tool.hatch.build.targets.wheel.force-include]
+# YAML algorithm specs (now inside the package for importlib.resources access)
+"src/load_forecasting/specs/backtest_model.yaml"            = "load_forecasting/specs/backtest_model.yaml"
+"src/load_forecasting/specs/evaluate_forecast_model.yaml"   = "load_forecasting/specs/evaluate_forecast_model.yaml"
+"src/load_forecasting/specs/generate_evaluation_report.yaml" = "load_forecasting/specs/generate_evaluation_report.yaml"
+"src/load_forecasting/specs/generate_forecast.yaml"         = "load_forecasting/specs/generate_forecast.yaml"
+"src/load_forecasting/specs/inspect_data.yaml"              = "load_forecasting/specs/inspect_data.yaml"
+"src/load_forecasting/specs/list_models.yaml"               = "load_forecasting/specs/list_models.yaml"
+"src/load_forecasting/specs/train_forecast_model.yaml"      = "load_forecasting/specs/train_forecast_model.yaml"
+"src/load_forecasting/specs/tune_model.yaml"                = "load_forecasting/specs/tune_model.yaml"
+"src/load_forecasting/specs/fetch_weather_forecast.yaml"    = "load_forecasting/specs/fetch_weather_forecast.yaml"
+"src/load_forecasting/specs/generate_backtest_report.yaml" = "load_forecasting/specs/generate_backtest_report.yaml"
+"src/load_forecasting/specs/merge_covariates.yaml"          = "load_forecasting/specs/merge_covariates.yaml"
+"src/load_forecasting/specs/generate_inference_dashboard.yaml" = "load_forecasting/specs/generate_inference_dashboard.yaml"
+"src/load_forecasting/specs/batch_train_forecast_models.yaml" = "load_forecasting/specs/batch_train_forecast_models.yaml"
+"src/load_forecasting/specs/batch_generate_forecast.yaml"    = "load_forecasting/specs/batch_generate_forecast.yaml"
+# HTML report assets (Jinja template, CSS, vendored JS)
+"src/load_forecasting/reporting/template.html"              = "load_forecasting/reporting/template.html"
+"src/load_forecasting/reporting/styles.css"                 = "load_forecasting/reporting/styles.css"
+"src/load_forecasting/reporting/charts.js"                  = "load_forecasting/reporting/charts.js"
+"src/load_forecasting/reporting/assets/d3.min.js"           = "load_forecasting/reporting/assets/d3.min.js"
+"src/load_forecasting/reporting/assets/observable-plot.min.js" = "load_forecasting/reporting/assets/observable-plot.min.js"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

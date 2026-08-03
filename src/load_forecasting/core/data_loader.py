@@ -21,7 +21,7 @@ import math
 import numpy as np
 import pandas as pd
 from darts import TimeSeries
-from darts.dataprocessing.transformers import Scaler
+from darts.dataprocessing.transformers import MissingValuesFiller, Scaler
 
 from .spec_loader import get_auto_detect_patterns
 from .frequency_utils import  hours_to_steps
@@ -35,7 +35,12 @@ _MIN_COVERAGE = 0.90
 # Lag offsets (in hours) added as past covariates from the target column
 _DEFAULT_LAG_HOURS = [24, 48, 168]
 
-# Calendar feature column names injected automatically
+# Calendar feature column names injected automatically.
+# Cyclic sin/cos encodings for hour, day-of-week, and month match the
+# feature set described in Li et al. (2025) Table 6.  Raw integer columns
+# (cal_hour, cal_dow, cal_month) and cal_is_weekend are retained alongside
+# the cyclic encodings because tree models (XGBoost, RandomForest) can split
+# on integers directly without needing to invert sin/cos pairs.
 _CALENDAR_COLS = [
     "cal_hour",
     "cal_dow",
@@ -43,6 +48,10 @@ _CALENDAR_COLS = [
     "cal_is_weekend",
     "cal_hour_sin",
     "cal_hour_cos",
+    "cal_dow_sin",    # Li et al. (2025) Table 6: T_week_sin
+    "cal_dow_cos",    # Li et al. (2025) Table 6: T_week_cos
+    "cal_month_sin",  # Li et al. (2025) Table 6: T_month_sin
+    "cal_month_cos",  # Li et al. (2025) Table 6: T_month_cos
 ]
 
 
@@ -107,8 +116,9 @@ class ForecastingDataLoader:
                 Larger gaps are warned about but not filled; you will see NaN
                 values remain after interpolation.
             add_calendar_features: If True (default), inject hour-of-day,
-                day-of-week, month, is_weekend, and cyclic hour encoding as
-                past covariates.
+                day-of-week, month, is_weekend, cyclic hour/dow/month
+                sin+cos encodings as past covariates (matching Li et al.
+                2025, Table 6).
             lag_hours: List of hour offsets for lag features derived from the
                 target column.  Defaults to [24, 48, 168].  Pass [] to
                 disable lag features.
@@ -310,29 +320,20 @@ class ForecastingDataLoader:
                 f"Available columns: {available}"
             )
 
-        # Warn and drop any past covariate columns that don't exist
-        cov_cols = self.column_mapping.get("past_covariates", [])
-        missing_covs = [c for c in cov_cols if c not in self.df.columns]
-        if missing_covs:
-            logger.warning(
-                "Past covariate column(s) not found in CSV and will be skipped: %s",
-                missing_covs,
-            )
-            self.column_mapping["past_covariates"] = [
-                c for c in cov_cols if c in self.df.columns
-            ]
+        # Warn and drop any covariate columns that don't exist
+        self._prune_missing_columns("past_covariates", "Past")
+        self._prune_missing_columns("future_covariates", "Future")
 
-        # Warn and drop any future covariate columns that don't exist
-        fut_cov_cols = self.column_mapping.get("future_covariates", [])
-        missing_fut_covs = [c for c in fut_cov_cols if c not in self.df.columns]
-        if missing_fut_covs:
+    def _prune_missing_columns(self, mapping_key: str, label: str) -> None:
+        """Drop mapped covariate columns absent from the DataFrame, with a warning."""
+        cols = self.column_mapping.get(mapping_key, [])
+        missing = [c for c in cols if c not in self.df.columns]
+        if missing:
             logger.warning(
-                "Future covariate column(s) not found in CSV and will be skipped: %s",
-                missing_fut_covs,
+                "%s covariate column(s) not found in CSV and will be skipped: %s",
+                label, missing,
             )
-            self.column_mapping["future_covariates"] = [
-                c for c in fut_cov_cols if c in self.df.columns
-            ]
+            self.column_mapping[mapping_key] = [c for c in cols if c in self.df.columns]
 
     def _validate_frequency(self) -> None:
         """
@@ -474,17 +475,14 @@ class ForecastingDataLoader:
                 gap_locs[0] if gap_locs else "N/A",
             )
 
-        target_col = self.column_mapping["target"]
-        if self.df[target_col].isna().any():
-            self.df[target_col] = self.df[target_col].interpolate(method="time")
-
-        for cov_col in self.column_mapping.get("past_covariates", []):
-            if cov_col in self.df.columns and self.df[cov_col].isna().any():
-                self.df[cov_col] = self.df[cov_col].interpolate(method="time")
-
-        for cov_col in self.column_mapping.get("future_covariates", []):
-            if cov_col in self.df.columns and self.df[cov_col].isna().any():
-                self.df[cov_col] = self.df[cov_col].interpolate(method="time")
+        cols = (
+            [self.column_mapping["target"]]
+            + list(self.column_mapping.get("past_covariates", []))
+            + list(self.column_mapping.get("future_covariates", []))
+        )
+        for col in cols:
+            if col in self.df.columns and self.df[col].isna().any():
+                self.df[col] = self.df[col].interpolate(method="time")
 
     # ------------------------------------------------------------------
     # Feature engineering
@@ -501,26 +499,50 @@ class ForecastingDataLoader:
             cal_is_weekend   : 0 or 1
             cal_hour_sin     : sin(2π * hour / 24)
             cal_hour_cos     : cos(2π * hour / 24)
+            cal_dow_sin      : sin(2π * dow / 7)   — Li et al. (2025) Table 6: T_week_sin
+            cal_dow_cos      : cos(2π * dow / 7)   — Li et al. (2025) Table 6: T_week_cos
+            cal_month_sin    : sin(2π * (month-1) / 12) — Li et al. (2025) Table 6: T_month_sin
+            cal_month_cos    : cos(2π * (month-1) / 12) — Li et al. (2025) Table 6: T_month_cos
+
+        The month encoding uses (month - 1) so that January (1) maps to 0 and
+        December (12) maps to 11, placing them at adjacent points on the unit
+        circle and preserving the Dec→Jan periodicity.
 
         All new columns are appended to past_covariates in column_mapping.
         """
         idx = self.df.index
         hour = idx.hour.astype(float)
+        dow = idx.dayofweek.astype(float)
+        month0 = (idx.month - 1).astype(float)  # 0..11 for clean Dec→Jan wrap
 
-        _two_pi_over_24 = 2 * math.pi / 24  # constant — computed once per call
+        _two_pi_over_24 = 2 * math.pi / 24  # computed once per call
+        _two_pi_over_7  = 2 * math.pi / 7
+        _two_pi_over_12 = 2 * math.pi / 12
+
         self.df["cal_hour"] = hour
-        self.df["cal_dow"] = idx.dayofweek.astype(float)
+        self.df["cal_dow"] = dow
         self.df["cal_month"] = idx.month.astype(float)
         self.df["cal_is_weekend"] = (idx.dayofweek >= 5).astype(float)
-        self.df["cal_hour_sin"] = np.sin(hour * _two_pi_over_24)
-        self.df["cal_hour_cos"] = np.cos(hour * _two_pi_over_24)
+        self.df["cal_hour_sin"] = np.sin(hour   * _two_pi_over_24)
+        self.df["cal_hour_cos"] = np.cos(hour   * _two_pi_over_24)
+        self.df["cal_dow_sin"]  = np.sin(dow    * _two_pi_over_7)
+        self.df["cal_dow_cos"]  = np.cos(dow    * _two_pi_over_7)
+        self.df["cal_month_sin"] = np.sin(month0 * _two_pi_over_12)
+        self.df["cal_month_cos"] = np.cos(month0 * _two_pi_over_12)
 
+        logger.info(
+            "Added calendar features: %s",
+            self._extend_past_covariates(_CALENDAR_COLS),
+        )
+
+    def _extend_past_covariates(self, cols: list) -> list:
+        """Append new (not-yet-present) columns to past_covariates; return them."""
         existing = set(self.column_mapping.get("past_covariates", []))
-        new_cols = [c for c in _CALENDAR_COLS if c not in existing]
+        new_cols = [c for c in cols if c not in existing]
         self.column_mapping["past_covariates"] = (
             self.column_mapping.get("past_covariates", []) + new_cols
         )
-        logger.info("Added calendar features: %s", new_cols)
+        return new_cols
 
     def _add_lag_features(self) -> None:
         """
@@ -541,17 +563,22 @@ class ForecastingDataLoader:
             if col_name in self.df.columns:
                 continue  # already present (e.g. explicit mapping)
             self.df[col_name] = self.df[target_col].shift(lag_steps)
-            # Forward-fill NaN prefix so Darts gets a fully valid series
-            self.df[col_name] = self.df[col_name].bfill()
+            # Forward-fill NaN prefix so Darts gets a fully valid series.
+            # ffill propagates the first valid value forwards (no future leakage).
+            # Note: bfill was used previously but introduced temporal leakage for
+            # short series by filling early NaN values with future observations.
+            self.df[col_name] = self.df[col_name].ffill()
+            # Fallback: if the entire column is still NaN (context shorter
+            # than the lag offset), fill with the target mean. This is the
+            # best "no-information" estimate and prevents NaN from
+            # propagating into the feature matrix during inference.
+            if self.df[col_name].isna().any():
+                target_mean = self.df[target_col].mean()
+                self.df[col_name] = self.df[col_name].fillna(target_mean)
             added.append(col_name)
 
         if added:
-            existing = set(self.column_mapping.get("past_covariates", []))
-            new_cols = [c for c in added if c not in existing]
-            self.column_mapping["past_covariates"] = (
-                self.column_mapping.get("past_covariates", []) + new_cols
-            )
-            logger.info("Added lag features: %s", new_cols)
+            logger.info("Added lag features: %s", self._extend_past_covariates(added))
 
     # ------------------------------------------------------------------
     # Darts conversion
@@ -575,69 +602,41 @@ class ForecastingDataLoader:
         time_col_name = self.df.index.name or "index"
         df_reset = self.df.reset_index()
 
-        # Target series
-        target_series = TimeSeries.from_dataframe(
-            df_reset,
-            time_col=time_col_name,
-            value_cols=[target_col],
-            freq=self.frequency,
-            fill_missing_dates=True,
-            fillna_value=None,
+        # When the underlying DataFrame is non-contiguous (e.g. after a seasonal
+        # split that interleaves winter/spring/summer/fall chunks), Darts'
+        # fill_missing_dates=True inserts NaN rows for the intra-year time gaps.
+        # MissingValuesFiller(fill='auto') interpolates those gaps so that
+        # sklearn models (LinearRegression, XGBoost) never receive NaN inputs.
+        gap_filler = MissingValuesFiller(fill="auto")
+
+        def build(value_cols: list, scaler_attr: str):
+            """Build one gap-filled, scaled TimeSeries (or None if no columns)."""
+            cols = [c for c in value_cols if c in self.df.columns]
+            if not cols:
+                return None
+            series = TimeSeries.from_dataframe(
+                df_reset,
+                time_col=time_col_name,
+                value_cols=cols,
+                freq=self.frequency,
+                fill_missing_dates=True,
+                fillna_value=None,
+            )
+            series = gap_filler.transform(series)
+            if fit_scalers:
+                setattr(self, scaler_attr, Scaler())
+                series = getattr(self, scaler_attr).fit_transform(series)
+            elif getattr(self, scaler_attr):
+                series = getattr(self, scaler_attr).transform(series)
+            return series
+
+        target_series = build([target_col], "target_scaler")
+        covariate_series = build(
+            self.column_mapping.get("past_covariates", []), "covariate_scaler"
         )
-
-        if fit_scalers:
-            self.target_scaler = Scaler()
-            target_series = self.target_scaler.fit_transform(target_series)
-        elif self.target_scaler:
-            target_series = self.target_scaler.transform(target_series)
-
-        # Past covariate series
-        cov_cols = [c for c in self.column_mapping.get("past_covariates", []) if c in self.df.columns]
-        covariate_series = None
-
-        if cov_cols:
-            covariate_series = TimeSeries.from_dataframe(
-                df_reset,
-                time_col=time_col_name,
-                value_cols=cov_cols,
-                freq=self.frequency,
-                fill_missing_dates=True,
-                fillna_value=None,
-            )
-
-            if fit_scalers:
-                self.covariate_scaler = Scaler()
-                covariate_series = self.covariate_scaler.fit_transform(covariate_series)
-            elif self.covariate_scaler:
-                covariate_series = self.covariate_scaler.transform(covariate_series)
-
-        # Future covariate series
-        fut_cov_cols = [
-            c for c in self.column_mapping.get("future_covariates", [])
-            if c in self.df.columns
-        ]
-        future_covariate_series = None
-
-        if fut_cov_cols:
-            future_covariate_series = TimeSeries.from_dataframe(
-                df_reset,
-                time_col=time_col_name,
-                value_cols=fut_cov_cols,
-                freq=self.frequency,
-                fill_missing_dates=True,
-                fillna_value=None,
-            )
-
-            if fit_scalers:
-                self.future_covariate_scaler = Scaler()
-                future_covariate_series = self.future_covariate_scaler.fit_transform(
-                    future_covariate_series
-                )
-            elif self.future_covariate_scaler:
-                future_covariate_series = self.future_covariate_scaler.transform(
-                    future_covariate_series
-                )
-
+        future_covariate_series = build(
+            self.column_mapping.get("future_covariates", []), "future_covariate_scaler"
+        )
         return target_series, covariate_series, future_covariate_series
 
     # ------------------------------------------------------------------
@@ -668,6 +667,18 @@ class ForecastingDataLoader:
     # Splitting
     # ------------------------------------------------------------------
 
+    def _clone_with_df(self, df: pd.DataFrame) -> "ForecastingDataLoader":
+        """Build a fresh, unscaled loader sharing this loader's config over ``df``."""
+        sub = ForecastingDataLoader.__new__(ForecastingDataLoader)
+        sub.df = df
+        sub.column_mapping = self.column_mapping.copy()
+        sub.frequency = self.frequency
+        sub.csv_path = self.csv_path
+        sub.target_scaler = None
+        sub.covariate_scaler = None
+        sub.future_covariate_scaler = None
+        return sub
+
     def split_train_val(
         self, validation_split: float = 0.2
     ) -> tuple["ForecastingDataLoader", "ForecastingDataLoader"]:
@@ -683,61 +694,97 @@ class ForecastingDataLoader:
             Tuple of (train_loader, val_loader).
         """
         split_idx = int(len(self.df) * (1 - validation_split))
-        train_df = self.df.iloc[:split_idx].copy()
-        val_df = self.df.iloc[split_idx:].copy()
+        return (
+            self._clone_with_df(self.df.iloc[:split_idx].copy()),
+            self._clone_with_df(self.df.iloc[split_idx:].copy()),
+        )
 
-        train_loader = ForecastingDataLoader.__new__(ForecastingDataLoader)
-        train_loader.df = train_df
-        train_loader.column_mapping = self.column_mapping.copy()
-        train_loader.frequency = self.frequency
-        train_loader.csv_path = self.csv_path
-        train_loader.target_scaler = None
-        train_loader.covariate_scaler = None
-        train_loader.future_covariate_scaler = None
+    def split_train_val_seasonal(
+        self, validation_split: float = 0.2
+    ) -> tuple["ForecastingDataLoader", "ForecastingDataLoader"]:
+        """
+        Seasonally-stratified train/validation split.
 
-        val_loader = ForecastingDataLoader.__new__(ForecastingDataLoader)
-        val_loader.df = val_df
-        val_loader.column_mapping = self.column_mapping.copy()
-        val_loader.frequency = self.frequency
-        val_loader.csv_path = self.csv_path
-        val_loader.target_scaler = None
-        val_loader.covariate_scaler = None
-        val_loader.future_covariate_scaler = None
+        Implements the approach from Li et al. (2025) "A cross-dimensional
+        analysis of data-driven short-term load forecasting methods with
+        large-scale smart meter data" (Energy & Buildings, 344):
 
-        return train_loader, val_loader
+            "To ensure coverage of different seasons, the development set
+            was first divided into four seasonal chunks, each of which was
+            further split into 80% for training and 20% for validation."
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+        The dataset is partitioned into four meteorological seasons by month:
 
-    @staticmethod
-    def _freq_to_timedelta(freq: str) -> pd.Timedelta:
-        """Convert a pandas frequency string to a Timedelta."""
-        return _freq_str_to_timedelta(freq)
+        - Winter : Dec, Jan, Feb
+        - Spring : Mar, Apr, May
+        - Summer : Jun, Jul, Aug
+        - Fall   : Sep, Oct, Nov
 
+        Within each seasonal chunk the **last** ``validation_split`` fraction
+        (by time) is held out for validation; the earlier portion trains.
+        The four training chunks and four validation chunks are each
+        concatenated and re-sorted chronologically before being returned.
 
-# ---------------------------------------------------------------------------
-# Module-level helper (used both inside and outside the class)
-# ---------------------------------------------------------------------------
+        Fallback behaviour
+        ------------------
+        If fewer than all four seasons are present in the data a
+        ``WARNING`` is logged and the method falls back to the standard
+        sequential :py:meth:`split_train_val`.  This keeps the API safe
+        for short datasets (e.g. single-season smoke-tests).
 
-# Lookup table built once at import time — not re-created on every call.
-_FREQ_TIMEDELTA_MAP: dict = {
-    "h": pd.Timedelta(hours=1),
-    "H": pd.Timedelta(hours=1),
-    "15min": pd.Timedelta(minutes=15),
-    "15T": pd.Timedelta(minutes=15),
-    "30min": pd.Timedelta(minutes=30),
-    "30T": pd.Timedelta(minutes=30),
-    "D": pd.Timedelta(days=1),
-    "d": pd.Timedelta(days=1),
-}
+        Args:
+            validation_split: Fraction held out per season (0.1 – 0.3).
 
+        Returns:
+            Tuple of (train_loader, val_loader).
+        """
+        # Map each month to its meteorological season name
+        _MONTH_TO_SEASON = {
+            12: "winter", 1: "winter", 2: "winter",
+            3: "spring",  4: "spring", 5: "spring",
+            6: "summer",  7: "summer", 8: "summer",
+            9: "fall",   10: "fall",  11: "fall",
+        }
+        _ALL_SEASONS = {"winter", "spring", "summer", "fall"}
 
-def _freq_str_to_timedelta(freq: str) -> pd.Timedelta:
-    """Convert a supported frequency string to a pd.Timedelta."""
-    if freq in _FREQ_TIMEDELTA_MAP:
-        return _FREQ_TIMEDELTA_MAP[freq]
-    try:
-        return pd.Timedelta(freq)
-    except ValueError:
-        return pd.Timedelta(hours=1)
+        # Assign a season label to every row using the DatetimeIndex
+        seasons = self.df.index.month.map(_MONTH_TO_SEASON)
+        present_seasons = set(seasons.unique())
+        missing_seasons = _ALL_SEASONS - present_seasons
+
+        if missing_seasons:
+            logger.warning(
+                "Seasonal split requested but the following season(s) are not "
+                "present in the data: %s. "
+                "Falling back to sequential split (validation_split=%.2f). "
+                "Provide at least 12 months of data to enable seasonal splitting.",
+                sorted(missing_seasons),
+                validation_split,
+            )
+            return self.split_train_val(validation_split)
+
+        train_chunks: list[pd.DataFrame] = []
+        val_chunks: list[pd.DataFrame] = []
+
+        for season in ("winter", "spring", "summer", "fall"):
+            mask = seasons == season
+            chunk = self.df.loc[mask]
+            n = len(chunk)
+            split_idx = int(n * (1 - validation_split))
+            # Guard: ensure each chunk has enough rows
+            if split_idx == 0 or split_idx == n:
+                logger.warning(
+                    "Season '%s' has too few rows (%d) for a %.0f%%/%.0f%% split. "
+                    "Falling back to sequential split.",
+                    season, n,
+                    (1 - validation_split) * 100,
+                    validation_split * 100,
+                )
+                return self.split_train_val(validation_split)
+            train_chunks.append(chunk.iloc[:split_idx].copy())
+            val_chunks.append(chunk.iloc[split_idx:].copy())
+
+        train_df = pd.concat(train_chunks).sort_index()
+        val_df = pd.concat(val_chunks).sort_index()
+
+        return self._clone_with_df(train_df), self._clone_with_df(val_df)

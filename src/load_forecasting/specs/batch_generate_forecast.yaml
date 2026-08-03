@@ -1,0 +1,120 @@
+# Batch Generate Forecast Specification
+# For AlphaBuilding-Agents SpecRegistry and AI discovery
+
+id: forecasting.batch_generate_forecast
+version: "1.0.0"
+mcp_server: load_forecasting
+mcp_tool: batch_generate_forecast
+
+category: forecasting
+tags: [load_forecasting, batch, multi_series, fleet, inference, prediction, darts]
+description: >
+  Generate forward forecasts for many trained models in a single call. Fans out
+  generate_forecast over a list of jobs, each pairing a model_id with a recent-
+  context CSV. Fault tolerant: a failure on one series is recorded and the batch
+  continues. Use after batch_train_forecast_models to run day-ahead (or n-hour-
+  ahead) forecasts across a whole fleet of feeders/substations/buildings at once.
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+inputs:
+  - name: jobs
+    type: array
+    required: true
+    description: >
+      Per-series forecast job dicts. Each job requires model_id and csv_path, and
+      optionally supports series_id (label), column_mapping (override the model's
+      stored mapping), horizon_hours (per-job override), and output_csv_path.
+    items:
+      type: object
+      properties:
+        model_id: { type: string, description: "Trained model to run" }
+        csv_path: { type: string, description: "Recent-context CSV for this model" }
+        series_id: { type: string, description: "Result label (defaults to model_id)" }
+        column_mapping: { type: object }
+        horizon_hours: { type: integer, minimum: 1, maximum: 96 }
+        output_csv_path: { type: string }
+
+  - name: horizon_hours
+    type: integer
+    required: false
+    minimum: 1
+    maximum: 96
+    description: Default horizon override applied to jobs that do not set their own.
+
+  - name: num_samples
+    type: integer
+    required: false
+    default: 200
+    description: >
+      Monte-Carlo sample count for probabilistic models. Ignored for point
+      models. More samples give smoother quantile bands at higher cost.
+
+  - name: output_dir
+    type: string
+    required: false
+    description: >
+      If given, each series' predictions are written to
+      <output_dir>/<series_id>.csv unless the job sets its own output_csv_path.
+    example: "/data/forecasts/2025-01-24"
+
+  - name: continue_on_error
+    type: boolean
+    required: false
+    default: true
+    description: If true, keep forecasting remaining series after a failure.
+
+# ==============================================================================
+# OUTPUTS
+# ==============================================================================
+outputs:
+  success:
+    type: boolean
+    description: Whether the batch ran (individual series may still have failed)
+
+  error:
+    type: string
+    description: Error message if the batch could not start
+
+  summary:
+    type: object
+    properties:
+      total: { type: integer }
+      succeeded: { type: integer }
+      failed: { type: integer }
+      failed_series: { type: array, items: { type: string } }
+
+  results:
+    type: array
+    description: Per-series forecast outcome
+    items:
+      type: object
+      properties:
+        series_id: { type: string }
+        success: { type: boolean }
+        model_id: { type: string }
+        forecast_start: { type: string, format: datetime }
+        forecast_end: { type: string, format: datetime }
+        predictions:
+          type: array
+          items:
+            type: object
+            properties:
+              datetime: { type: string, format: datetime }
+              predicted_load: { type: number }
+        probabilistic: { type: boolean, description: "True if quantile bands are included" }
+        quantiles: { type: array, items: { type: number } }
+        output_csv_path: { type: string }
+        error: { type: string }
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+notes:
+  - "Each job pairs one trained model_id with its own recent-context CSV"
+  - "Fault tolerant by default: one bad series does not abort the batch"
+  - "For probabilistic models each prediction row carries q<level> keys (e.g. q0.1, q0.9)"
+  - "Use output_dir to write one CSV per series automatically"
+  - "Pair with batch_train_forecast_models for a full fleet train->forecast workflow"
+  - "Column mapping from training is reused per model unless overridden in the job"

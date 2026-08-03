@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ title }}</title>
+  <style>
+{{ inlined_css }}
+
+/* ── Inference dashboard extras ─────────────────────────────────────────── */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 16px;
+  margin-bottom: 20px;
+  font-size: 13px;
+}
+
+.toolbar button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.toolbar button:hover   { background: #1d4ed8; }
+.toolbar button:disabled { background: #93c5fd; cursor: not-allowed; }
+
+.toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+#last-refresh { color: var(--muted); font-size: 12px; }
+
+.refresh-status {
+  font-size: 12px;
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+.refresh-status.ok    { background: #d1fae5; color: #065f46; }
+.refresh-status.error { background: #fee2e2; color: #991b1b; }
+
+/* Summary card row */
+#summary-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-bottom: 24px;
+}
+
+/* Legend */
+.chart-legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.legend-item { display: flex; align-items: center; gap: 4px; }
+.dot  { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.dash { width: 16px; height: 3px; border-radius: 2px; display: inline-block; }
+
+/* Live badge */
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #d1fae5;
+  color: #065f46;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+.live-badge::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #10b981;
+  animation: pulse 1.6s infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+
+/* Context note */
+.context-note {
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+  margin-top: 6px;
+}
+
+/* Forecast table */
+table.forecast-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-top: 8px;
+}
+table.forecast-table th,
+table.forecast-table td {
+  text-align: left;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+}
+table.forecast-table th {
+  background: var(--card-bg);
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+table.forecast-table tr:hover td { background: #f0f9ff; }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <header class="report-header">
+      <h1 id="report-title">
+        {{ title }}
+        <span class="live-badge" style="margin-left:10px;vertical-align:middle">Live</span>
+      </h1>
+      <div class="subtitle" id="dashboard-subtitle"></div>
+    </header>
+
+    <nav class="toc">
+      <a href="#summary">Summary</a>
+      <a href="#forecast-chart">Forecast</a>
+      <a href="#weather-section">Weather</a>
+      <a href="#forecast-table">Forecast table</a>
+      <a href="#meta-section">Model metadata</a>
+    </nav>
+
+    <!-- ── Toolbar ─────────────────────────────────────────────────────── -->
+    <div class="toolbar">
+      <button id="refresh-btn">Refresh Weather</button>
+      <label>
+        <input id="auto-refresh-toggle" type="checkbox" />
+        Auto-refresh (5 min)
+      </label>
+      <span id="last-refresh"></span>
+      <span id="refresh-status" class="refresh-status"></span>
+    </div>
+
+    <!-- ── Summary cards ───────────────────────────────────────────────── -->
+    <section id="summary">
+      <h2>Forecast summary</h2>
+      <div id="summary-cards"></div>
+    </section>
+
+    <!-- ── Load forecast chart ─────────────────────────────────────────── -->
+    <section id="forecast-chart">
+      <h2>Load forecast</h2>
+      <p class="context-note">
+        Dashed grey line = recent actual context fed to the model.
+        Solid blue = model predictions. Red dashed line = current time.
+      </p>
+      <div class="chart" id="chart-forecast"></div>
+    </section>
+
+    <!-- ── Weather section ─────────────────────────────────────────────── -->
+    <section id="weather-section">
+      <h2>Live weather <span class="live-badge" style="font-size:10px">Open-Meteo</span></h2>
+      <p class="context-note">
+        Fetched live from
+        <a href="https://open-meteo.com" target="_blank" rel="noopener">open-meteo.com</a>
+        free forecast API. Click <strong>Refresh Weather</strong> to update.
+      </p>
+
+      <h3>Temperature</h3>
+      <div class="chart" id="chart-weather"></div>
+
+      <h3>Solar radiation</h3>
+      <div class="chart" id="chart-solar"></div>
+
+      <h3>Hourly weather data (first 48 h)</h3>
+      <table class="stats">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Temp (°C)</th>
+            <th>RH (%)</th>
+            <th>Solar (W/m²)</th>
+            <th>Wind (m/s)</th>
+          </tr>
+        </thead>
+        <tbody id="weather-table-body"></tbody>
+      </table>
+    </section>
+
+    <!-- ── Forecast table ──────────────────────────────────────────────── -->
+    <section id="forecast-table">
+      <h2>Forecast step-by-step</h2>
+      <p class="context-note">
+        All {{ n_steps }} forecast steps from the model snapshot generated at report creation time.
+      </p>
+      <table class="forecast-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Datetime</th>
+            <th>Predicted load (kWh)</th>
+          </tr>
+        </thead>
+        <tbody id="forecast-table-body"></tbody>
+      </table>
+    </section>
+
+    <!-- ── Model metadata ──────────────────────────────────────────────── -->
+    <section id="meta-section">
+      <h2>Model metadata</h2>
+      <div class="kv-grid" id="meta-grid"></div>
+    </section>
+
+    <footer class="report-footer">
+      load_forecasting inference dashboard · live weather via Open-Meteo ·
+      vendored d3 v7 + Observable Plot v0.6
+    </footer>
+
+  </div><!-- .container -->
+
+  <!-- ── Embedded libraries (vendored, no network required for charts) ─── -->
+  <script>
+{{ d3_js }}
+  </script>
+  <script>
+{{ plot_js }}
+  </script>
+
+  <!-- ── Baked-in inference data ─────────────────────────────────────── -->
+  <script>
+window.__INFERENCE_DATA__ = {{ payload_json }};
+  </script>
+
+  <!-- ── Chart + live-fetch logic ───────────────────────────────────────  -->
+  <script>
+{{ charts_js }}
+  </script>
+</body>
+</html>

@@ -19,7 +19,31 @@ from typing import Optional, Any
 import logging
 import os
 
-from darts.models import RegressionModel, NaiveMean, NaiveSeasonal, NaiveMovingAverage
+from darts.models import (
+    RegressionModel,
+    NaiveMean,
+    NaiveSeasonal,
+    NaiveMovingAverage,
+    XGBModel,
+    BlockRNNModel,
+    ARIMA,
+    TFTModel,
+    TiDEModel,
+    TSMixerModel,
+)
+
+# TimesFM 2.5 is optional — import guarded so this module still loads if the
+# wrapper is missing (e.g. older darts versions without huggingface_hub).
+try:
+    from darts.models.forecasting.timesfm2p5_model import TimesFM2p5Model
+    _HAS_TIMESFM = True
+except Exception:  # pragma: no cover - import guard
+    TimesFM2p5Model = None  # type: ignore[assignment]
+    _HAS_TIMESFM = False
+
+# Hybrid class always importable locally; ImportError from TimesFM only fires
+# at instantiation/load time inside the class.
+from .hybrid_timesfm import TimesFMResidualHybrid
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +176,7 @@ class ModelRegistry:
         training_metrics: dict,
         validation_metrics: dict,
         scalers: Optional[dict] = None,
+        training_info: Optional[dict] = None,
     ) -> str:
         """
         Save model and metadata to registry.
@@ -167,6 +192,9 @@ class ModelRegistry:
             training_metrics: Training set metrics
             validation_metrics: Validation set metrics
             scalers: Dict with target_scaler and covariate_scaler
+            training_info: Optional training diagnostics (training_time_seconds,
+                energy_kwh, per-epoch training_history for Torch models, …).
+                Persisted verbatim into metadata.json under "training_info".
 
         Returns:
             Path to saved model directory
@@ -188,6 +216,7 @@ class ModelRegistry:
                 "training": training_metrics,
                 "validation": validation_metrics,
             },
+            "training_info": training_info or {},
             "version_info": {
                 "darts_version": _DARTS_VERSION,
                 "load_forecasting_version": _PKG_VERSION,
@@ -298,6 +327,48 @@ class ModelRegistry:
             model_type = metadata.get("model_type", "")
             if model_type == "LinearRegression":
                 model = RegressionModel.load(str(model_path))
+            elif model_type == "XGBoost":
+                model = XGBModel.load(str(model_path))
+            elif model_type == "LSTM":
+                # PyTorch >= 2.6 defaults weights_only=True which rejects
+                # Lightning checkpoints containing optimizer state.  Pass
+                # weights_only=False explicitly; the checkpoint originates
+                # from this server so the source is trusted.
+                model = BlockRNNModel.load(str(model_path), weights_only=False)
+            elif model_type == "ARIMA":
+                # ARIMA uses the base ForecastingModel pickle-based save/load.
+                model = ARIMA.load(str(model_path))
+            elif model_type == "TFT":
+                # TFTModel uses PyTorch Lightning checkpoints (same caveat as LSTM).
+                model = TFTModel.load(str(model_path), weights_only=False)
+            elif model_type == "TiDE":
+                # TiDEModel uses PyTorch Lightning checkpoints (same caveat as LSTM).
+                model = TiDEModel.load(str(model_path), weights_only=False)
+            elif model_type == "TSMixer":
+                # TSMixerModel uses PyTorch Lightning checkpoints (same caveat as LSTM).
+                model = TSMixerModel.load(str(model_path), weights_only=False)
+            elif model_type == "TimesFM":
+                # TimesFM2p5Model is a PyTorch Lightning-based FoundationModel
+                # and stores its state (including HuggingFace-loaded weights)
+                # via the same Lightning checkpoint mechanism as LSTM/TFT.
+                if not _HAS_TIMESFM:
+                    raise ModelCorruptedError(
+                        "TimesFM2p5Model wrapper not available in this "
+                        "environment; cannot load model_id="
+                        f"{model_id}."
+                    )
+                model = TimesFM2p5Model.load(str(model_path), weights_only=False)
+            elif model_type == "TimesFM+Residual":
+                # Hybrid: TimesFM backbone + Ridge residual regressor.
+                # Content is stored across sibling files rooted at model_path;
+                # the primary file is a sentinel.
+                if not _HAS_TIMESFM:
+                    raise ModelCorruptedError(
+                        "TimesFM2p5Model wrapper not available in this "
+                        "environment; cannot load hybrid model_id="
+                        f"{model_id}."
+                    )
+                model = TimesFMResidualHybrid.load(str(model_path))
             elif model_type == "NaiveMean":
                 model = NaiveMean.load(str(model_path))
             elif model_type == "NaiveSeasonal":

@@ -1,0 +1,215 @@
+/* Self-contained styles for the evaluation report.
+   No external fonts — system stack only. */
+
+:root {
+  --bg: #ffffff;
+  --fg: #1f2937;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --accent: #2563eb;
+  --accent-soft: #dbeafe;
+  --good: #047857;
+  --warn: #b45309;
+  --bad: #b91c1c;
+  --card-bg: #f9fafb;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+               "Helvetica Neue", Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+header.report-header {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 16px;
+  margin-bottom: 24px;
+}
+
+header.report-header h1 {
+  margin: 0 0 4px 0;
+  font-size: 22px;
+}
+
+header.report-header .subtitle {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+nav.toc {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 16px;
+  margin-bottom: 24px;
+  font-size: 13px;
+}
+
+nav.toc a {
+  color: var(--accent);
+  text-decoration: none;
+  margin-right: 14px;
+}
+
+nav.toc a:hover { text-decoration: underline; }
+
+section {
+  margin-bottom: 32px;
+}
+
+section h2 {
+  font-size: 17px;
+  margin: 0 0 12px 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+section h3 {
+  font-size: 14px;
+  margin: 18px 0 8px 0;
+  color: var(--muted);
+}
+
+/* Metadata grid */
+.kv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px 16px;
+  font-size: 13px;
+}
+
+.kv-grid .kv {
+  display: flex;
+  flex-direction: column;
+  background: var(--card-bg);
+  padding: 8px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+.kv-grid .kv .k {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.kv-grid .kv .v {
+  font-weight: 600;
+  word-break: break-word;
+}
+
+/* Metric cards */
+.metric-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.metric-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+
+.metric-card .label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.metric-card .value {
+  font-size: 22px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.metric-card .compare {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.badge.similar { background: var(--accent-soft); color: var(--accent); }
+.badge.improved { background: #d1fae5; color: var(--good); }
+.badge.degraded { background: #fee2e2; color: var(--bad); }
+
+/* Chart frame */
+.chart {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+}
+
+.chart-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 800px) {
+  .chart-row { grid-template-columns: 1fr; }
+}
+
+table.stats {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+table.stats th, table.stats td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+table.stats th {
+  background: var(--card-bg);
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.note {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+footer.report-footer {
+  margin-top: 40px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+}

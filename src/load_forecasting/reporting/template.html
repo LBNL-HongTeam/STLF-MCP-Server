@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ title }}</title>
+  <style>
+{{ inlined_css }}
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <header class="report-header">
+      <h1 id="report-title">{{ title }}</h1>
+      <div class="subtitle" id="report-subtitle"></div>
+    </header>
+
+    <nav class="toc">
+      <a href="#meta">Metadata</a>
+      <a href="#metrics">Metrics</a>
+      <a href="#training-curve">Training curve</a>
+      <a href="#actual-vs-pred">Actual vs Predicted</a>
+      <a href="#residuals">Residuals</a>
+      <a href="#parity">Parity</a>
+      <a href="#error-profile">Error profile</a>
+      <a href="#peak-metrics">Peak metrics</a>
+      <a href="#input-preview">Input data</a>
+      <a href="#residual-analysis">Residual analysis</a>
+    </nav>
+
+    <section id="meta">
+      <h2>Model metadata</h2>
+      <div class="kv-grid" id="meta-grid"></div>
+    </section>
+
+    <section id="metrics">
+      <h2>Test metrics
+        <span id="compare-badge" class="badge" style="margin-left:8px"></span>
+      </h2>
+      <div class="metric-cards" id="metric-cards"></div>
+    </section>
+
+    <section id="training-curve">
+      <h2>Training curve</h2>
+      <p class="note">Per-epoch training and validation loss recorded during model fitting (neural-network models only).</p>
+      <div class="chart" id="chart-training-curve"></div>
+    </section>
+
+    <section id="actual-vs-pred">
+      <h2>Actual vs predicted</h2>
+      <div class="chart" id="chart-actual-vs-pred"></div>
+    </section>
+
+    <section id="residuals">
+      <h2>Residuals over time</h2>
+      <div class="chart" id="chart-residuals"></div>
+
+      <h3>Residual distribution</h3>
+      <div class="chart-row">
+        <div class="chart">
+          <div id="chart-residual-hist"></div>
+          <div class="note" id="residual-hist-stats" style="margin-top:8px"></div>
+        </div>
+        <div class="chart" id="parity-wrap">
+          <div id="chart-parity"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="error-profile">
+      <h2>Error profile</h2>
+      <div class="chart-row">
+        <div class="chart">
+          <h3 style="margin-top:0">Hour-of-day MAE</h3>
+          <div id="chart-hourly-mae"></div>
+        </div>
+        <div class="chart">
+          <h3 style="margin-top:0">Day-of-week MAE</h3>
+          <div id="chart-dow-mae"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="peak-metrics">
+      <h2>Peak metrics</h2>
+      <p class="note">
+        Peak MAPE (PMAPE) and Peak Timing Error (PTE) on user-supplied peak
+        days, following Li et al. (2025), Table 5.
+      </p>
+      <div class="metric-cards" id="peak-metric-cards"></div>
+      <div class="kv-grid" id="peak-metric-counts"></div>
+
+      <h3>Actual vs predicted peak load</h3>
+      <div class="chart" id="chart-peak-values"></div>
+
+      <h3>Per-day peak breakdown</h3>
+      <table class="stats">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Actual peak</th>
+            <th>Predicted peak</th>
+            <th>Actual hour</th>
+            <th>Predicted hour</th>
+            <th>PMAPE %</th>
+            <th>PTE (hrs)</th>
+          </tr>
+        </thead>
+        <tbody id="peak-metrics-body"></tbody>
+      </table>
+    </section>
+
+    <section id="input-preview">
+      <h2>Input data preview</h2>
+      <h3>Target series</h3>
+      <div class="chart">
+        <div id="chart-input-target"></div>
+        <div class="note" id="input-target-note"></div>
+      </div>
+
+      <h3>Covariates</h3>
+      <div class="chart" id="chart-input-covariates"></div>
+
+      <h3>Per-column statistics</h3>
+      <table class="stats">
+        <thead>
+          <tr>
+            <th>Role</th><th>Column</th><th>N</th>
+            <th>Mean</th><th>Std</th>
+            <th>Min</th><th>Max</th>
+            <th>P5</th><th>P95</th>
+          </tr>
+        </thead>
+        <tbody id="input-stats-body"></tbody>
+      </table>
+    </section>
+
+    <section id="residual-analysis">
+      <h2>Residual analysis</h2>
+      <div class="kv-grid" id="residual-analysis-grid"></div>
+    </section>
+
+    <footer class="report-footer">
+      load_forecasting evaluation report · self-contained · vendored
+      d3 v7 + Observable Plot v0.6
+    </footer>
+
+  </div>
+
+  <!-- ============================================================
+       Embedded JS — order matters: d3 must load before Plot.
+       Both libraries are vendored, no network access required.
+       ============================================================ -->
+  <script>
+{{ d3_js }}
+  </script>
+  <script>
+{{ plot_js }}
+  </script>
+  <script id="report-data" type="application/json-not-loaded">{}</script>
+  <script>
+window.__REPORT_DATA__ = {{ payload_json }};
+  </script>
+  <script>
+{{ charts_js }}
+  </script>
+</body>
+</html>

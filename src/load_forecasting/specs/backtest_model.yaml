@@ -1,0 +1,222 @@
+# Backtest Model Specification
+# For AlphaBuilding-Agents SpecRegistry and AI discovery
+
+id: forecasting.backtest_model
+version: "1.0.0"
+mcp_server: load_forecasting
+mcp_tool: backtest_model
+
+category: forecasting
+tags: [load_forecasting, backtesting, evaluation, rolling_window, metrics, darts]
+description: >
+  Run a rolling-window backtest of a trained model on historical data.
+  Similar to evaluate_forecast_model but with configurable stride and start
+  position, making it easy to assess model performance across many historical
+  windows rather than a single test split.  Uses the same rolling-forecast
+  engine as generate_forecast for consistent results.
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+inputs:
+  # --- Model Selection ---
+  - name: model_id
+    type: string
+    required: true
+    description: >
+      ID of a trained model (returned from train_forecast_model or tune_model).
+      Use list_models to see available models.
+    example: "Building_33_LinearRegression_20250124_143022"
+
+  # --- Historical Data ---
+  - name: csv_path
+    type: string
+    required: true
+    delivery_mode: file_reference
+    description: >
+      Path to CSV with historical data. Should have the same column structure
+      as the training data and ideally cover a longer period than the training
+      data for a meaningful out-of-sample assessment.
+    example: "/data/building_33_2024.csv"
+
+  - name: column_mapping
+    type: object
+    required: false
+    description: >
+      Column role mapping. If not provided, the mapping stored in the model
+      metadata from training is used. Only specify if the CSV has different
+      column names than the training data.
+
+  # --- Rolling Window Parameters ---
+  - name: stride_hours
+    type: integer
+    required: false
+    minimum: 1
+    maximum: 96
+    description: >
+      Step size between forecast windows in hours. Defaults to the model's
+      training horizon (non-overlapping windows). Use a smaller value for
+      overlapping windows and finer temporal coverage of prediction errors.
+    example: 6
+
+  - name: start_fraction
+    type: number
+    required: false
+    default: 0.2
+    minimum: 0.1
+    maximum: 0.5
+    description: >
+      Fraction of the series to skip before starting the rolling forecast.
+      Ensures the model has enough historical context to warm up (lag features,
+      seasonality). Default 0.2 means the first 20% of the series is skipped.
+
+  # --- Output Options ---
+  - name: return_predictions
+    type: boolean
+    required: false
+    default: true
+    description: >
+      Include per-step predictions (timestamp, actual, predicted, residual)
+      in the response. Can be large for long series; use output_csv_path
+      for big datasets.
+
+  - name: output_csv_path
+    type: string
+    required: false
+    description: Optional path to write predictions as a CSV file.
+    example: "/data/backtest_output.csv"
+
+  - name: include_residual_analysis
+    type: boolean
+    required: false
+    default: false
+    description: Include residual statistics (mean, std, autocorrelation).
+
+  - name: peak_dates
+    type: array
+    required: false
+    items: { type: string, format: "date", example: "2023-02-22" }
+    description: >
+      Optional list of date strings ("YYYY-MM-DD") identifying peak demand days
+      to evaluate with PMAPE and PTE metrics (Li et al. 2025, Table 5).
+      When provided, a peak_metrics key is added to the response.
+      Paper winter peak window: ["2023-02-22","2023-02-23","2023-02-24","2023-02-25"]
+      Paper summer peak window: ["2023-08-14","2023-08-15","2023-08-16","2023-08-17"]
+
+# ==============================================================================
+# OUTPUTS
+# ==============================================================================
+outputs:
+  success:
+    type: boolean
+    description: Whether the backtest completed successfully
+
+  error:
+    type: string
+    description: Error message if success=false
+
+  model_id:
+    type: string
+    description: Model that was backtested
+
+  model_type:
+    type: string
+    description: Type of model (e.g. LinearRegression, XGBoost)
+
+  backtest_metrics:
+    type: object
+    description: Aggregate performance metrics across all rolling windows
+    properties:
+      rmse: { type: number, units: "same as target" }
+      mae: { type: number, units: "same as target" }
+      mape: { type: number, units: "%" }
+      cv_rmse: { type: number, units: "%", description: "(rmse / mean_actual) * 100" }
+      r_squared: { type: number, description: "1 - (SS_res / SS_tot)" }
+
+  comparison_to_validation:
+    type: object
+    description: Compare backtest metrics to validation metrics from training
+    properties:
+      cv_rmse_diff: { type: number, description: "backtest_cv_rmse - validation_cv_rmse" }
+      performance_status:
+        type: string
+        enum: ["similar", "degraded", "improved"]
+        description: >
+          Whether backtest performance is similar to validation.
+          Difference <= 5% CV-RMSE is considered similar.
+
+  backtest_summary:
+    type: object
+    properties:
+      n_windows: { type: integer, description: "Number of forecast windows evaluated" }
+      stride_hours: { type: integer }
+      stride_steps: { type: integer, description: "Stride in data steps" }
+      start_fraction: { type: number }
+      backtest_start_date: { type: string, format: datetime }
+      backtest_end_date: { type: string, format: datetime }
+      total_samples: { type: integer }
+      column_mapping_source:
+        type: string
+        enum: ["provided", "from_model_metadata"]
+
+  predictions:
+    type: array
+    description: Per-step predictions (if return_predictions=true)
+    items:
+      type: object
+      properties:
+        timestamp: { type: string, format: datetime }
+        actual: { type: number }
+        predicted: { type: number }
+        residual: { type: number, description: "actual - predicted" }
+
+  residual_analysis:
+    type: object
+    description: Residual statistics (if include_residual_analysis=true)
+    properties:
+      mean_residual: { type: number, description: "Should be ~0 for unbiased model" }
+      std_residual: { type: number }
+      autocorrelation_lag1: { type: number, description: "Should be ~0 for good model" }
+
+  output_csv_path:
+    type: string
+    description: Path to saved CSV if output_csv_path was provided
+
+  peak_metrics:
+    type: object
+    description: >
+      Peak load prediction metrics per Li et al. (2025), Table 5.
+      Only present when peak_dates is supplied.
+    properties:
+      peak_mape: { type: number, units: "%", description: "Mean PMAPE across peak days" }
+      peak_timing_error_hours: { type: number, units: "hours", description: "Mean PTE across peak days" }
+      n_peak_days_evaluated: { type: integer }
+      n_peak_days_skipped: { type: integer }
+      per_day:
+        type: array
+        items:
+          type: object
+          properties:
+            date: { type: string }
+            actual_peak_value: { type: number }
+            predicted_peak_value: { type: number }
+            actual_peak_hour: { type: integer }
+            predicted_peak_hour: { type: integer }
+            peak_magnitude_error_pct: { type: number }
+            peak_timing_error_hours: { type: number }
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+notes:
+  - "Use list_models to find available model IDs before calling this tool"
+  - "Column mapping from training is automatically reused if not specified"
+  - "Backtest uses retrain=False — model weights do not change during backtesting"
+  - "stride_hours < horizon_hours produces overlapping windows (more points, correlated errors)"
+  - "start_fraction=0.2 ensures 20% of data is used as warm-up before rolling starts"
+  - "CV-RMSE difference vs validation > 5pp suggests distributional shift in this period"
+  - "Predictions array can be large; use output_csv_path for long series"
+  - "Unlike evaluate_forecast_model, backtest_model allows custom start position and stride"
+  - "Use generate_forecast for live forward predictions; use backtest_model for historical assessment"
+  - "stride_hours maximum raised to 96 to support the paper's 96h horizon configuration"
+  - "Use peak_dates with paper windows to compute PMAPE and PTE alongside aggregate metrics"

@@ -1,0 +1,205 @@
+# Generate Backtest Report Specification
+# For AlphaBuilding-Agents SpecRegistry and AI discovery
+
+id: forecasting.generate_backtest_report
+version: "1.0.0"
+mcp_server: load_forecasting
+mcp_tool: generate_backtest_report
+
+category: forecasting
+tags: [load_forecasting, backtesting, report, html, visualization, rolling_window, metrics, darts]
+description: >
+  Generate a self-contained interactive HTML backtest report for a trained
+  model. Runs a rolling-window backtest internally (same engine as
+  backtest_model), computes h-step-ahead error metrics, and renders an
+  interactive page with a forecast-playback slider, an h-step-ahead RMSE
+  chart, overall metrics, hour-of-day / day-of-week error profiles, and
+  optional residual analysis.
+
+  The output HTML is fully self-contained (d3 v7 + Observable Plot v0.6 are
+  vendored inline) and can be opened directly in any modern browser via
+  file:// — no server required.
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+inputs:
+  # --- Required ---
+  - name: model_id
+    type: string
+    required: true
+    description: >
+      ID of a trained model (returned from train_forecast_model or tune_model).
+      Use list_models to see available models.
+    example: "Building_33_XGBoost_20250124_143022"
+
+  - name: csv_path
+    type: string
+    required: true
+    delivery_mode: file_reference
+    description: >
+      Path to CSV with historical data. Should have the same column structure
+      as the training data and ideally cover a longer period for a meaningful
+      out-of-sample assessment.
+    example: "/data/building_33_2024.csv"
+
+  - name: output_html_path
+    type: string
+    required: true
+    description: >
+      Destination path for the generated .html report. Parent directories are
+      created automatically. Open with any modern browser.
+    example: "reports/backtest_report.html"
+
+  # --- Optional ---
+  - name: column_mapping
+    type: object
+    required: false
+    description: >
+      Column role mapping override. Defaults to the mapping stored in the model
+      metadata from training. Only specify if the CSV has different column names.
+
+  - name: stride_hours
+    type: integer
+    required: false
+    minimum: 1
+    maximum: 96
+    description: >
+      Step size between re-forecast windows in hours. Defaults to the model's
+      training horizon (non-overlapping windows). Use a smaller value for
+      overlapping windows and finer temporal coverage.
+    example: 6
+
+  - name: start_fraction
+    type: number
+    required: false
+    default: 0.2
+    minimum: 0.1
+    maximum: 0.5
+    description: >
+      Fraction of the series to skip before starting the rolling forecast,
+      allowing the model to warm up (lag features, seasonality). Default 0.2
+      skips the first 20% of the series.
+
+  - name: include_residual_analysis
+    type: boolean
+    required: false
+    default: true
+    description: >
+      Compute and include mean/std residual and lag-1 autocorrelation
+      statistics in the report.
+
+  - name: peak_dates
+    type: array
+    required: false
+    items: { type: string, format: "date", example: "2023-02-22" }
+    description: >
+      Optional list of date strings ("YYYY-MM-DD") identifying peak demand days
+      to evaluate with PMAPE and PTE metrics (Li et al. 2025, Table 5).
+      When provided, a peak_metrics key is added to the response.
+
+  - name: title
+    type: string
+    required: false
+    description: >
+      Optional human-friendly title for the report header.
+      Defaults to a title derived from the model_id.
+    example: "Building 33 — Backtest Report"
+
+# ==============================================================================
+# OUTPUTS
+# ==============================================================================
+outputs:
+  success:
+    type: boolean
+    description: Whether the report was generated successfully.
+
+  error:
+    type: string
+    description: Error message if success=false.
+
+  output_html_path:
+    type: string
+    description: Absolute path to the generated HTML report.
+
+  file_size_bytes:
+    type: integer
+    description: Size of the generated HTML file in bytes.
+
+  n_windows:
+    type: integer
+    description: Number of rolling forecast windows evaluated.
+
+  n_points:
+    type: integer
+    description: Number of per-step prediction points across all windows.
+
+  model_id:
+    type: string
+    description: Echoed model ID.
+
+  model_type:
+    type: string
+    description: Model type (e.g. XGBoost, LinearRegression, LSTM).
+
+  backtest_metrics:
+    type: object
+    description: Aggregate performance metrics across all rolling windows.
+    properties:
+      rmse: { type: number, units: "same as target" }
+      mae: { type: number, units: "same as target" }
+      mape: { type: number, units: "%" }
+      cv_rmse: { type: number, units: "%", description: "(rmse / mean_actual) * 100" }
+      r_squared: { type: number, description: "1 - (SS_res / SS_tot)" }
+
+  comparison_to_validation:
+    type: object
+    description: Compare backtest metrics to validation metrics from training.
+    properties:
+      cv_rmse_diff: { type: number, description: "backtest_cv_rmse - validation_cv_rmse" }
+      performance_status:
+        type: string
+        enum: ["similar", "degraded", "improved"]
+
+  backtest_summary:
+    type: object
+    description: Summary of the rolling-window configuration and coverage.
+    properties:
+      n_windows: { type: integer }
+      stride_hours: { type: integer }
+      stride_steps: { type: integer }
+      start_fraction: { type: number }
+      backtest_start_date: { type: string, format: datetime }
+      backtest_end_date: { type: string, format: datetime }
+      total_samples: { type: integer }
+
+  peak_metrics:
+    type: object
+    description: >
+      Peak load prediction metrics per Li et al. (2025), Table 5.
+      Only present when peak_dates is supplied.
+    properties:
+      peak_mape: { type: number, units: "%" }
+      peak_timing_error_hours: { type: number, units: "hours" }
+      n_peak_days_evaluated: { type: integer }
+      n_peak_days_skipped: { type: integer }
+
+  ml_warnings:
+    type: array
+    items: { type: string }
+    description: Soft ML guardrail warnings from the backtest step (non-fatal).
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+notes:
+  - "The generated HTML is fully self-contained — all JS and CSS are inlined"
+  - "Open via file:// in any modern browser; no web server required"
+  - "Same rolling-window engine as backtest_model, but renders an interactive report"
+  - "Forecast-playback slider steps through every re-forecast window over the actuals"
+  - "h-step-ahead RMSE chart shows how accuracy degrades with forecast horizon"
+  - "Use backtest_model instead if you only need the metrics as JSON (no HTML)"
+  - "stride_hours < horizon_hours produces overlapping windows (more points, correlated errors)"
+  - "start_fraction=0.2 ensures 20% of data is used as warm-up before rolling starts"
+  - "Backtest uses retrain=False — model weights do not change during backtesting"
+  - "Use peak_dates with paper windows to compute PMAPE and PTE alongside aggregate metrics"

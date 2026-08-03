@@ -1,0 +1,240 @@
+# Generate Inference Dashboard Specification
+# For AlphaBuilding-Agents SpecRegistry and AI discovery
+
+id: forecasting.generate_inference_dashboard
+version: "1.0.0"
+mcp_server: load_forecasting
+mcp_tool: generate_inference_dashboard
+
+category: forecasting
+tags: [inference, live, html, dashboard, open_meteo, weather, visualization]
+description: >
+  Generate a self-contained interactive HTML inference dashboard that runs a
+  one-shot forward forecast with a trained model and provides a live connection
+  to the Open-Meteo weather API directly in the browser.
+
+  The HTML file:
+    - Embeds the model's load forecast as an interactive time series chart
+      (Observable Plot + d3 v7, fully vendored — no CDN required).
+    - Shows a dashed grey context trace (recent actuals fed to the model).
+    - Fetches live weather (temperature, solar, wind, humidity) from
+      Open-Meteo in the browser via a "Refresh Weather" button.
+    - Provides an auto-refresh toggle (polls every 5 minutes automatically).
+    - Works when opened via file:// — no web server needed.
+
+  Typical workflow:
+    1. Train a model with train_forecast_model.
+    2. Prepare a recent-context CSV covering at least lookback_hours of load data.
+    3. Call generate_inference_dashboard with the model_id, context CSV,
+       building coordinates, and an output HTML path.
+    4. Open the generated HTML in any modern browser.
+    5. Click "Refresh Weather" to update the live weather overlay from Open-Meteo.
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+inputs:
+  # --- Required ---
+  - name: model_id
+    type: string
+    required: true
+    description: >
+      ID of a trained model from the model registry (output of
+      train_forecast_model). Used to load the model, scalers, and metadata.
+    example: "Building_33_XGBoost_20250601_120000"
+
+  - name: csv_path
+    type: string
+    required: true
+    description: >
+      Path to a recent-context CSV file.  Must contain at least lookback_hours
+      of non-NaN target readings.  For weather-aware models (future covariates),
+      also include horizon_hours of future covariate rows with NaN target values.
+      Alternatively, the tool will use the server-side weather fetch (latitude +
+      longitude) for the weather-overlay — the context CSV only needs load data.
+    example: "/data/recent_load_context.csv"
+
+  - name: output_html_path
+    type: string
+    required: true
+    description: >
+      Destination path for the generated HTML file.  Parent directories are
+      created automatically.  Open with any modern browser.
+    example: "reports/inference_dashboard.html"
+
+  - name: latitude
+    type: number
+    required: true
+    minimum: -90
+    maximum: 90
+    description: >
+      WGS84 latitude of the building or site.  Used for both the server-side
+      weather snapshot baked into the HTML and the browser-side live refresh.
+    example: 37.7749
+
+  - name: longitude
+    type: number
+    required: true
+    minimum: -180
+    maximum: 180
+    description: >
+      WGS84 longitude of the building or site.
+    example: -122.4194
+
+  # --- Optional ---
+  - name: timezone
+    type: string
+    required: false
+    default: "UTC"
+    description: >
+      IANA timezone string (e.g. "America/Los_Angeles" or "UTC").
+      Applied to both the server-side weather fetch and the browser live refresh.
+      Use the same timezone as your load data.
+    example: "America/Los_Angeles"
+
+  - name: column_mapping
+    type: object
+    required: false
+    description: >
+      Column role mapping (datetime, target, past_covariates,
+      future_covariates).  If not provided, the mapping stored in the model
+      metadata from training is used.
+    example:
+      datetime: "timestamp"
+      target: "kwh"
+      past_covariates: ["temperature", "humidity"]
+
+  - name: horizon_hours
+    type: integer
+    required: false
+    minimum: 1
+    maximum: 96
+    description: >
+      Forecast horizon override in hours (1–96).  If not provided, the model's
+      training horizon is used.
+    example: 24
+
+  - name: weather_variables
+    type: array
+    items: { type: string }
+    required: false
+    description: >
+      Explicit list of Open-Meteo variable names to include in the weather
+      snapshot.  Overrides weather_preset if provided.
+      Common names: temperature_2m, relative_humidity_2m, apparent_temperature,
+      shortwave_radiation, wind_speed_10m, cloud_cover, precipitation.
+    example: ["temperature_2m", "relative_humidity_2m", "shortwave_radiation"]
+
+  - name: weather_preset
+    type: string
+    required: false
+    default: "building_load"
+    enum: [minimal, building_load, extended]
+    description: >
+      Named weather variable preset for the server-side snapshot.
+      - minimal: temperature_2m, relative_humidity_2m
+      - building_load (default): + apparent_temperature, shortwave_radiation,
+          wind_speed_10m, cloud_cover, precipitation
+      - extended: + dew_point_2m, direct_radiation, diffuse_radiation,
+          wind_direction_10m, surface_pressure, is_day
+    example: "building_load"
+
+  - name: title
+    type: string
+    required: false
+    description: >
+      Optional dashboard title shown in the HTML <title> and <h1>.
+      Defaults to "Load Forecast — <model_id>".
+    example: "Building 33 — Day-Ahead Forecast"
+
+# ==============================================================================
+# OUTPUTS
+# ==============================================================================
+outputs:
+  success:
+    type: boolean
+    description: Whether the dashboard was generated successfully.
+
+  error:
+    type: string
+    description: Error message if success=false.
+
+  output_html_path:
+    type: string
+    description: Absolute path to the generated HTML file.
+
+  file_size_bytes:
+    type: integer
+    description: Size of the generated HTML file in bytes.
+
+  model_id:
+    type: string
+    description: Echoed model ID.
+
+  model_type:
+    type: string
+    description: Model type (e.g. XGBoost, LinearRegression, LSTM).
+
+  forecast_start:
+    type: string
+    format: datetime
+    description: Start timestamp of the forecast horizon (ISO8601).
+
+  forecast_end:
+    type: string
+    format: datetime
+    description: End timestamp of the forecast horizon (ISO8601).
+
+  n_steps:
+    type: integer
+    description: Number of forecast steps embedded in the dashboard.
+
+  context_rows:
+    type: integer
+    description: Number of context rows (actuals) passed to the model.
+
+  weather_fetched:
+    type: boolean
+    description: >
+      True if the server-side Open-Meteo fetch succeeded and the weather
+      snapshot was baked into the HTML.  False if it failed (non-fatal —
+      the browser-side live refresh will still work).
+
+  weather_variables:
+    type: array
+    items: { type: string }
+    description: List of weather variable names in the baked-in snapshot.
+
+  latitude:
+    type: number
+    description: Echoed latitude.
+
+  longitude:
+    type: number
+    description: Echoed longitude.
+
+  timezone:
+    type: string
+    description: Echoed timezone.
+
+  ml_warnings:
+    type: array
+    items: { type: string }
+    description: >
+      Soft ML guardrail warnings from the inference step (non-fatal).
+      Examples: short context window, horizon exceeds lookback.
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+notes:
+  - "The generated HTML is fully self-contained — all JS and CSS are inlined"
+  - "Open via file:// in any modern browser; no web server required"
+  - "Weather charts update live from Open-Meteo free API (no API key) on Refresh"
+  - "Load forecast is a one-shot model snapshot baked in at generation time"
+  - "Re-run the tool to get a fresh forecast; the browser only refreshes weather"
+  - "For weather-aware models, include future covariate rows in the context CSV"
+  - "Set timezone matching your load data to align chart timestamps correctly"
+  - "Auto-refresh polls Open-Meteo every 5 minutes when the toggle is enabled"
+  - "httpx must be installed for server-side weather fetch; browser-side always works"
+  - "Open-Meteo is free for non-commercial use — see open-meteo.com/en/pricing"

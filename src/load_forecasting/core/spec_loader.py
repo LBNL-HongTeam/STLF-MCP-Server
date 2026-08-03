@@ -6,18 +6,28 @@ Specs define:
 - Data constraints and validation rules
 - Column auto-detection patterns
 - Algorithm metadata for AI discovery
+
+Specs live in load_forecasting/specs/ (inside the package) so they are
+accessible whether the package is run from source or installed via pip.
+importlib.resources is used for path resolution to guarantee correctness
+in both environments.
 """
 
 import yaml
-from pathlib import Path
-from functools import lru_cache
-from typing import Optional
 import logging
+from functools import lru_cache
+from importlib.resources import files
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Specs directory relative to this file
-SPECS_DIR = Path(__file__).parent.parent.parent.parent / "specs"
+# Package-relative path to the specs directory
+_SPECS_PACKAGE = "load_forecasting.specs"
+
+
+def _specs_dir():
+    """Return the importlib.resources traversable for the specs package."""
+    return files(_SPECS_PACKAGE)
 
 
 @lru_cache(maxsize=32)
@@ -31,17 +41,21 @@ def load_spec(tool_name: str) -> Optional[dict]:
     Returns:
         Parsed YAML spec dict, or None if not found
     """
-    spec_path = SPECS_DIR / f"{tool_name}.yaml"
+    spec_file = _specs_dir().joinpath(f"{tool_name}.yaml")
 
-    if not spec_path.exists():
-        logger.warning(f"Spec not found: {spec_path}")
+    try:
+        content = spec_file.read_text(encoding="utf-8")
+    except (FileNotFoundError, TypeError):
+        logger.warning("Spec not found: %s.yaml", tool_name)
+        return None
+    except Exception as e:
+        logger.error("Error reading spec %s.yaml: %s", tool_name, e)
         return None
 
     try:
-        with open(spec_path, encoding="utf-8") as f:
-            return yaml.safe_load(f)
+        return yaml.safe_load(content)
     except yaml.YAMLError as e:
-        logger.error(f"Error parsing spec {spec_path}: {e}")
+        logger.error("Error parsing spec %s.yaml: %s", tool_name, e)
         return None
 
 
@@ -56,19 +70,25 @@ def get_all_specs() -> list[dict]:
         List of all parsed YAML spec dicts
     """
     specs = []
+    specs_dir = _specs_dir()
 
-    if not SPECS_DIR.exists():
-        logger.warning(f"Specs directory not found: {SPECS_DIR}")
+    try:
+        entries = sorted(
+            (e for e in specs_dir.iterdir() if e.name.endswith(".yaml")),
+            key=lambda e: e.name,
+        )
+    except Exception as e:
+        logger.warning("Could not list specs directory: %s", e)
         return specs
 
-    for spec_file in sorted(SPECS_DIR.glob("*.yaml")):
+    for entry in entries:
         try:
-            with open(spec_file, encoding="utf-8") as f:
-                spec = yaml.safe_load(f)
-                if spec:
-                    specs.append(spec)
+            content = entry.read_text(encoding="utf-8")
+            spec = yaml.safe_load(content)
+            if spec:
+                specs.append(spec)
         except yaml.YAMLError as e:
-            logger.error(f"Error parsing spec {spec_file}: {e}")
+            logger.error("Error parsing spec %s: %s", entry.name, e)
 
     return specs
 
@@ -155,7 +175,7 @@ def validate_spec(spec_data: dict) -> bool:
     """
     for field in _REQUIRED_SPEC_FIELDS:
         if field not in spec_data:
-            logger.warning(f"Spec missing required field: {field}")
+            logger.warning("Spec missing required field: %s", field)
             return False
 
     return True
