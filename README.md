@@ -26,6 +26,7 @@ with Li et al. (2025), *Energy & Buildings* 344.
 - [Available Tools](#available-tools)
 - [Usage Examples](#usage-examples)
 - [Architecture](#architecture)
+- [Agent Skills](#agent-skills)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
@@ -479,6 +480,7 @@ STLF-MCP-Server/
 │   ├── tools/                    # MCP tool implementations by workflow stage
 │   ├── specs/                    # YAML algorithm specs (agent discovery)
 │   └── reporting/                # Self-contained HTML report generation
+├── skills/                       # Optional AI-agent workflow instructions
 ├── models/                       # Trained models + registry.json (runtime)
 ├── reports/                      # Generated HTML reports (runtime)
 └── tests/                        # Unit + integration tests
@@ -487,6 +489,24 @@ STLF-MCP-Server/
 See `AGENTS.md` for architecture internals and non-obvious gotchas (covariate
 handling, hours-vs-steps conversion, MPS/OpenMP caveats, spec/registry
 resolution).
+
+## Agent Skills
+
+The top-level `skills/` directory contains optional instruction bundles for AI
+coding agents. Each skill lives in its own directory and is defined by a
+`SKILL.md` file with YAML front matter (`name` and `description`) followed by
+the workflow instructions.
+
+`skills/train-forecast-model/SKILL.md` guides an agent through the recommended
+inspect, merge, train, evaluate, backtest, and report sequence using this
+server's MCP tools. It does not implement forecasting logic and is not required
+to run the server; the Python tools remain the authoritative implementation.
+
+Agent skills are separate from `src/load_forecasting/specs/`. The `skills/`
+content tells an agent how to orchestrate tools, while the packaged YAML specs
+describe individual algorithms for runtime agent discovery. To use a skill,
+configure your AI client to load or import its directory according to that
+client's skill-discovery mechanism.
 
 ## Configuration
 
