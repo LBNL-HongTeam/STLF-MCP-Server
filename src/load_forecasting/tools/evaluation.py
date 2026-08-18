@@ -14,6 +14,7 @@ from ..core.evaluator import (
     compare_to_validation,
     calculate_metrics,
     calculate_probabilistic_metrics,
+    _maybe_inverse,
 )
 from ._common import (
     create_success_response,
@@ -30,6 +31,47 @@ from ._common import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _attach_quantiles_to_predictions(
+    pred_list: list[dict],
+    quantile_forecasts: dict,
+    scaler=None,
+) -> None:
+    """Merge quantile forecast values into prediction rows, in place.
+
+    Each row gains a ``"q<level>"`` key (e.g. ``"q0.1"``) matching the
+    ``generate_forecast`` convention.  Values are inverse-transformed back to
+    original units so they are directly comparable with ``actual`` /
+    ``predicted``.
+
+    Rows whose timestamp has no corresponding quantile value are left
+    untouched, so a partial overlap degrades to a partially-banded chart
+    rather than an error.
+
+    Args:
+        pred_list: Prediction rows from evaluate_forecast_model; each has a
+            ``"timestamp"`` ISO string.  Mutated in place.
+        quantile_forecasts: Mapping of quantile level -> TimeSeries, as
+            produced by ``stochastic.quantile(q)``.
+        scaler: Optional target scaler used during training.
+    """
+    for q, series in quantile_forecasts.items():
+        try:
+            s = _maybe_inverse(series, scaler)
+            values = s.values().flatten()
+            by_ts = {
+                ts.isoformat(): float(v) for ts, v in zip(s.time_index, values)
+            }
+        except Exception as e:
+            logger.warning("Failed to attach quantile %s to predictions: %s", q, e)
+            continue
+
+        key = f"q{q}"
+        for row in pred_list:
+            v = by_ts.get(row.get("timestamp"))
+            if v is not None:
+                row[key] = v
 
 
 def evaluate_forecast_model(
@@ -264,6 +306,17 @@ def evaluate_forecast_model(
                     prob_metrics["quantiles"] = trained_quantiles
                     prob_metrics["num_samples"] = int(num_samples)
                     response_data["probabilistic_metrics"] = prob_metrics
+
+                    # Attach the per-timestamp quantile values to the
+                    # prediction rows so downstream consumers (HTML report,
+                    # output CSV) can draw prediction bands.  Keys match the
+                    # generate_forecast convention: "q0.1", "q0.9", ...
+                    if return_predictions and response_data.get("predictions"):
+                        _attach_quantiles_to_predictions(
+                            response_data["predictions"],
+                            quantile_forecasts,
+                            loader.target_scaler,
+                        )
             except Exception as e:
                 logger.warning("Failed to compute probabilistic metrics: %s", e)
 

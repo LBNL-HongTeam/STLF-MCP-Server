@@ -104,6 +104,7 @@
       <a href="#metrics">Metrics</a>
       <a href="#playback">Forecast playback</a>
       <a href="#horizon-error">H-step error</a>
+      <a href="#probabilistic">Prediction intervals</a>
       <a href="#error-profile">Error profile</a>
       <a href="#peak-metrics">Peak metrics</a>
       <a href="#residual-analysis">Residual analysis</a>
@@ -159,6 +160,36 @@
         Values typically increase with horizon as uncertainty accumulates.
       </p>
       <div class="chart" id="chart-horizon-rmse"></div>
+    </section>
+
+    <!-- 5b. Prediction intervals (quantile-trained models only) -->
+    <section id="probabilistic">
+      <h2>Prediction intervals</h2>
+      <p class="note">
+        Interval quality across every re-forecast window. <strong>Pooled
+        coverage alone is not sufficient</strong>: it averages a tight
+        near-origin band with a loose far-horizon one, so a model that is
+        over-covered at h=1 and under-covered at h=24 can report a healthy
+        overall figure. The per-horizon breakdown below is the diagnostic that
+        matters — bars falling below the dashed nominal line are
+        under-covered (the model is overconfident at that lead time).
+      </p>
+      <div class="metric-cards" id="bt-probabilistic-cards"></div>
+      <div class="kv-grid" id="bt-probabilistic-kv"></div>
+
+      <h3>Coverage by horizon step</h3>
+      <div class="chart" id="chart-horizon-coverage"></div>
+
+      <h3>Interval width by horizon step</h3>
+      <p class="note">
+        Sharpness counterweight: widening bands buy coverage. Width should grow
+        with lead time — a flat profile alongside falling coverage means the
+        model is not propagating uncertainty.
+      </p>
+      <div class="chart" id="chart-horizon-width"></div>
+
+      <h3>Pinball loss by quantile</h3>
+      <div class="chart" id="chart-bt-pinball"></div>
     </section>
 
     <!-- 6. Error profile -->

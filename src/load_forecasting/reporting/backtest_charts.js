@@ -360,6 +360,23 @@
     // Vertical rule at forecast origin
     const originRule = [{ t: originTime }];
 
+    // Prediction band for this re-forecast window (quantile models only).
+    const prob = DATA.probabilistic || {};
+    const band = prob.has_band
+      ? (win.steps || [])
+          .filter(s => s.t &&
+                       s.lower !== null && s.lower !== undefined && isFinite(s.lower) &&
+                       s.upper !== null && s.upper !== undefined && isFinite(s.upper))
+          .map(s => ({ t: new Date(s.t), lo: +s.lower, hi: +s.upper }))
+      : [];
+
+    const bandMarks = band.length
+      ? [Plot.areaY(band, {
+          x: "t", y1: "lo", y2: "hi",
+          fill: "#2563eb", fillOpacity: 0.16,
+        })]
+      : [];
+
     const chart = Plot.plot({
       width: 1100,
       height: 320,
@@ -378,6 +395,8 @@
       },
       marks: [
         Plot.ruleY([0], { stroke: "#e5e7eb" }),
+        // Prediction interval, drawn first so the lines stay legible on top
+        ...bandMarks,
         // Full actual context line (grey)
         Plot.line(actualTagged, {
           x: "t", y: "v", stroke: "series",
@@ -426,8 +445,187 @@
       ["Window MAE",  fmtNumber(win.window_mae, 4)],
       ["Horizon steps", (win.steps || []).length],
     ];
+    const probMeta = DATA.probabilistic || {};
+    if (probMeta.has_band && probMeta.band) {
+      items.push([
+        "Shaded band",
+        "P" + Math.round(probMeta.band.lower * 100) +
+        "–P" + Math.round(probMeta.band.upper * 100),
+      ]);
+    }
     for (const [k, v] of items) {
       infoEl.appendChild(makeKV(k, v));
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Prediction intervals — quantile-trained models only.
+  //
+  // The centrepiece is coverage-by-horizon-step: pooled coverage averages a
+  // tight near-origin band with a loose far-horizon one and can look correct
+  // while both ends are wrong.
+  // -------------------------------------------------------------------------
+  function renderProbabilistic() {
+    const section = $("probabilistic");
+    const prob = DATA.probabilistic || {};
+    if (!prob || prob.pinball_loss === null || prob.pinball_loss === undefined) {
+      if (section) section.style.display = "none";
+      return;
+    }
+    if (section) section.style.display = "";
+
+    const hc = (prob.horizon_coverage || [])
+      .filter(d => d.coverage !== null && d.coverage !== undefined && isFinite(d.coverage));
+    const nominal = prob.nominal_coverage;
+
+    // ---- summary cards ---------------------------------------------------
+    const cards = $("bt-probabilistic-cards");
+    if (cards) {
+      cards.innerHTML = "";
+      cards.appendChild(makeMetricCard(
+        "Pooled coverage",
+        (prob.coverage === null || prob.coverage === undefined)
+          ? "—" : fmtNumber(prob.coverage * 100, 2) + "%",
+        (nominal === null || nominal === undefined)
+          ? null : "nominal: " + fmtNumber(nominal * 100, 0) + "%"
+      ));
+
+      // Spread of coverage across the horizon — the number that exposes a
+      // misleading pooled figure.
+      if (hc.length) {
+        const covs = hc.map(d => d.coverage);
+        const lo = Math.min(...covs), hi = Math.max(...covs);
+        const loH = hc.find(d => d.coverage === lo);
+        const hiH = hc.find(d => d.coverage === hi);
+        cards.appendChild(makeMetricCard(
+          "Coverage range over h",
+          fmtNumber(lo * 100, 1) + "% – " + fmtNumber(hi * 100, 1) + "%",
+          "worst h=" + (loH ? loH.h : "?") + ", best h=" + (hiH ? hiH.h : "?")
+        ));
+        const first = hc[0], last = hc[hc.length - 1];
+        cards.appendChild(makeMetricCard(
+          "Drift h=" + first.h + " → h=" + last.h,
+          ((last.coverage - first.coverage) >= 0 ? "+" : "") +
+            fmtNumber((last.coverage - first.coverage) * 100, 1) + " pts",
+          last.coverage < first.coverage
+            ? "bands too narrow far out" : "bands too wide far out"
+        ));
+      }
+
+      cards.appendChild(makeMetricCard(
+        "Mean interval width",
+        fmtNumber(prob.mean_interval_width, 3),
+        "sharpness — lower is better"
+      ));
+      cards.appendChild(makeMetricCard(
+        "Pinball loss",
+        fmtNumber(prob.pinball_loss, 3),
+        "mean over quantile levels"
+      ));
+    }
+
+    const kv = $("bt-probabilistic-kv");
+    if (kv) {
+      kv.innerHTML = "";
+      kv.appendChild(makeKV("Quantile levels", (prob.quantiles || []).join(", ") || "—"));
+      kv.appendChild(makeKV("Monte-Carlo samples", fmtNumber(prob.num_samples, 0)));
+      kv.appendChild(makeKV("Stochastic windows", fmtNumber(prob.n_windows, 0)));
+      if (prob.band) {
+        kv.appendChild(makeKV(
+          "Band",
+          "P" + Math.round(prob.band.lower * 100) +
+          "–P" + Math.round(prob.band.upper * 100) +
+          " (nominal " + fmtNumber(prob.band.nominal * 100, 0) + "%)"
+        ));
+      }
+    }
+
+    // ---- coverage by horizon step ---------------------------------------
+    const covWrap = $("chart-horizon-coverage");
+    if (covWrap) {
+      covWrap.innerHTML = "";
+      if (!hc.length) {
+        covWrap.innerHTML = "<p class='note'>No per-horizon coverage available.</p>";
+      } else {
+        const marks = [
+          Plot.ruleY([0]),
+          Plot.barY(hc, {
+            x: "h", y: "coverage",
+            fill: d => (nominal !== null && nominal !== undefined && d.coverage < nominal)
+              ? "#dc2626" : "#059669",
+            fillOpacity: 0.85,
+            title: d =>
+              "h=" + d.h +
+              "\ncoverage: " + fmtNumber(d.coverage * 100, 2) + "%" +
+              "\nwidth: " + fmtNumber(d.mean_interval_width, 2) +
+              "\nn: " + d.n,
+          }),
+        ];
+        if (nominal !== null && nominal !== undefined) {
+          // Target line: bars below it are under-covered (red).
+          marks.push(Plot.ruleY([nominal], {
+            stroke: "#b91c1c", strokeWidth: 1.5, strokeDasharray: "5,3",
+          }));
+        }
+        covWrap.appendChild(Plot.plot({
+          width: 1100,
+          height: 280,
+          marginLeft: 64,
+          marginBottom: 40,
+          x: { label: "Horizon step h", tickFormat: d => d, domain: hc.map(d => d.h) },
+          y: { label: "Empirical coverage", grid: true, percent: false },
+          marks: marks,
+        }));
+      }
+    }
+
+    // ---- interval width by horizon step ---------------------------------
+    const widthWrap = $("chart-horizon-width");
+    if (widthWrap) {
+      widthWrap.innerHTML = "";
+      const wRows = hc.filter(
+        d => d.mean_interval_width !== null && isFinite(d.mean_interval_width)
+      );
+      if (wRows.length) {
+        widthWrap.appendChild(Plot.plot({
+          width: 1100,
+          height: 240,
+          marginLeft: 64,
+          marginBottom: 40,
+          x: { label: "Horizon step h", tickFormat: d => d, domain: wRows.map(d => d.h) },
+          y: { label: "Mean interval width", grid: true },
+          marks: [
+            Plot.ruleY([0]),
+            Plot.line(wRows, { x: "h", y: "mean_interval_width", stroke: "#7c3aed", strokeWidth: 2 }),
+            Plot.dot(wRows, { x: "h", y: "mean_interval_width", fill: "#7c3aed", r: 3 }),
+            Plot.tip(wRows, Plot.pointerX({ x: "h", y: "mean_interval_width" })),
+          ],
+        }));
+      }
+    }
+
+    // ---- per-quantile pinball -------------------------------------------
+    const perQ = prob.per_quantile_pinball || {};
+    const rows = Object.keys(perQ)
+      .map(k => ({ q: k, level: parseFloat(k), loss: perQ[k] }))
+      .filter(r => isFinite(r.level) && r.loss !== null && r.loss !== undefined)
+      .sort((a, b) => a.level - b.level);
+    const pinWrap = $("chart-bt-pinball");
+    if (pinWrap && rows.length) {
+      pinWrap.innerHTML = "";
+      pinWrap.appendChild(Plot.plot({
+        width: 540,
+        height: 240,
+        marginLeft: 64,
+        marginBottom: 40,
+        x: { label: "Quantile level", domain: rows.map(r => r.q) },
+        y: { label: "Pinball loss", grid: true },
+        marks: [
+          Plot.barY(rows, { x: "q", y: "loss", fill: "#7c3aed", fillOpacity: 0.85 }),
+          Plot.ruleY([0]),
+          Plot.tip(rows, Plot.pointerX({ x: "q", y: "loss" })),
+        ],
+      }));
     }
   }
 
@@ -663,6 +861,7 @@
     try { renderMetrics(); }          catch (e) { console.error("renderMetrics:", e); }
     try { renderPlaybackSlider(); }   catch (e) { console.error("renderPlaybackSlider:", e); }
     try { renderHorizonRMSE(); }      catch (e) { console.error("renderHorizonRMSE:", e); }
+    try { renderProbabilistic(); }    catch (e) { console.error("renderProbabilistic:", e); }
     try { renderHourlyMAE(); }        catch (e) { console.error("renderHourlyMAE:", e); }
     try { renderDOWMAE(); }           catch (e) { console.error("renderDOWMAE:", e); }
     try { renderPeakMetrics(); }      catch (e) { console.error("renderPeakMetrics:", e); }

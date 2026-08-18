@@ -138,6 +138,16 @@
       );
     }
 
+    // Prediction band (probabilistic models only). Rows carry per-level
+    // "q<level>" keys straight from generate_forecast.
+    const band = (DATA.meta || {}).band;
+    const bandRows = band
+      ? parsedForecast
+          .map(r => ({ dt: r.dt, lo: r[band.lower_key], hi: r[band.upper_key] }))
+          .filter(r => r.lo !== null && r.lo !== undefined && isFinite(r.lo) &&
+                       r.hi !== null && r.hi !== undefined && isFinite(r.hi))
+      : [];
+
     const marks = [
       Plot.areaY(parsedForecast, {
         x: "dt", y: "load",
@@ -153,6 +163,16 @@
       }),
       ...boundaryMarks,
     ];
+
+    if (bandRows.length) {
+      // Insert after the decorative fill but before the forecast line so the
+      // median stays legible on top of the shaded interval.
+      marks.splice(1, 0, Plot.areaY(bandRows, {
+        x: "dt", y1: "lo", y2: "hi",
+        fill: "#2563eb", fillOpacity: 0.18, stroke: "none",
+        curve: "monotone-x",
+      }));
+    }
 
     if (context.length) {
       marks.unshift(
@@ -183,8 +203,12 @@
     const hasBoundary = context.length && parsedForecast.length;
     const legend = document.createElement("div");
     legend.className = "chart-legend";
+    const bandLabel = bandRows.length
+      ? "P" + Math.round(band.lower * 100) + "–P" + Math.round(band.upper * 100) + " interval"
+      : "";
     legend.innerHTML = `
-      <span class="legend-item"><span class="dot" style="background:#2563eb"></span>Forecast</span>
+      <span class="legend-item"><span class="dot" style="background:#2563eb"></span>Forecast${bandRows.length ? " (median)" : ""}</span>
+      ${bandRows.length ? '<span class="legend-item"><span class="dot" style="background:#2563eb;opacity:0.25"></span>' + bandLabel + '</span>' : ""}
       ${context.length ? '<span class="legend-item"><span class="dash" style="background:#6b7280"></span>Context (actual)</span>' : ""}
       ${hasBoundary ? '<span class="legend-item"><span class="dash" style="background:#ef4444"></span>Forecast start</span>' : ""}`;
     container.appendChild(legend);

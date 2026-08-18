@@ -445,6 +445,105 @@ def calculate_horizon_metrics(
     return results
 
 
+def calculate_horizon_coverage(
+    stochastic_windows: list,
+    actual: "TimeSeries",
+    lower_q: float,
+    upper_q: float,
+    scaler=None,
+) -> list:
+    """
+    Compute prediction-interval coverage and width per h-step-ahead position.
+
+    Pooled coverage across a multi-step horizon is misleading: a 1-step-ahead
+    band and a 24-step-ahead band are different objects, and a model that is
+    over-covered near the origin and under-covered far out can average to a
+    perfect-looking number.  This decomposes coverage by horizon step so that
+    degradation with lead time is visible.
+
+    Mirrors ``calculate_horizon_metrics``: for each step h it gathers the
+    predicted interval at position h across every rolling window and aligns it
+    with ground truth at the corresponding timestamp.
+
+    Args:
+        stochastic_windows: List of *stochastic* ``TimeSeries`` (n_samples > 1),
+            one per forecast window, as returned by
+            ``historical_forecasts(last_points_only=False, num_samples=N)``.
+        actual: Full ground-truth ``TimeSeries`` from the backtest start index.
+        lower_q: Lower quantile level of the band (e.g. 0.1).
+        upper_q: Upper quantile level of the band (e.g. 0.9).
+        scaler: Optional Darts ``Scaler`` applied to both sides.
+
+    Returns:
+        List of dicts sorted by h::
+
+            [{"h": 1, "coverage": 0.91, "mean_interval_width": 812.4, "n": 340},
+             ...]
+
+        Steps with fewer than 2 aligned pairs return ``None`` metrics and the
+        observed ``n``.
+    """
+    if not stochastic_windows:
+        return []
+
+    actual_inv = _maybe_inverse(actual, scaler)
+    try:
+        actual_pd = actual_inv.to_dataframe().iloc[:, 0]
+    except Exception as e:
+        logger.warning("calculate_horizon_coverage: cannot read actual series: %s", e)
+        return []
+
+    # Collapse each stochastic window to its lower/upper quantile pair once,
+    # then inverse-transform — O(W) scaler calls rather than O(W x H).
+    bands: list = []
+    for window in stochastic_windows:
+        try:
+            lo = _maybe_inverse(window.quantile(lower_q), scaler)
+            hi = _maybe_inverse(window.quantile(upper_q), scaler)
+        except Exception:
+            continue
+        bands.append((lo, hi))
+
+    if not bands:
+        return []
+
+    horizon_steps = max(len(lo) for lo, _ in bands)
+    results: list = []
+
+    for h in range(1, horizon_steps + 1):
+        inside = 0
+        widths: list = []
+        n = 0
+        for lo, hi in bands:
+            if len(lo) < h or len(hi) < h:
+                continue
+            step_ts = lo.time_index[h - 1]
+            if step_ts not in actual_pd.index:
+                continue
+            lo_v = float(lo.univariate_values()[h - 1])
+            hi_v = float(hi.univariate_values()[h - 1])
+            a_v = float(actual_pd.loc[step_ts])
+            n += 1
+            widths.append(hi_v - lo_v)
+            if lo_v <= a_v <= hi_v:
+                inside += 1
+
+        if n < 2:
+            results.append(
+                {"h": h, "coverage": None, "mean_interval_width": None, "n": n}
+            )
+            continue
+
+        results.append({
+            "h": h,
+            "coverage": round(inside / n, 4),
+            "mean_interval_width": round(float(np.mean(widths)), 4),
+            "n": n,
+        })
+
+    return results
+
+
 def compare_to_validation(
     test_metrics: dict,
     validation_metrics: dict,

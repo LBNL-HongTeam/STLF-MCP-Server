@@ -106,6 +106,18 @@ inputs:
       Defaults to a title derived from the model_id.
     example: "Building 33 — Backtest Report"
 
+  - name: num_samples
+    type: integer
+    required: false
+    default: 200
+    description: >
+      Monte-Carlo sample count for models trained with probabilistic=True.
+      Adds a "Prediction intervals" section to the report containing a
+      coverage-by-horizon-step chart (bars below the nominal line are
+      under-covered), an interval-width-by-horizon chart, and per-quantile
+      pinball loss — plus a shaded prediction band on the forecast-playback
+      chart. Ignored for point models.
+
 # ==============================================================================
 # OUTPUTS
 # ==============================================================================
@@ -203,3 +215,5 @@ notes:
   - "start_fraction=0.2 ensures 20% of data is used as warm-up before rolling starts"
   - "Backtest uses retrain=False — model weights do not change during backtesting"
   - "Use peak_dates with paper windows to compute PMAPE and PTE alongside aggregate metrics"
+  - "For quantile-trained models the playback chart shades the widest central band (e.g. P5-P95) per re-forecast window"
+  - "The coverage-by-horizon chart is the key interval diagnostic — pooled coverage alone can hide an over-covered near horizon offsetting an under-covered far horizon"

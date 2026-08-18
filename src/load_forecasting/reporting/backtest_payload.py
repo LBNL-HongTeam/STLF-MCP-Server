@@ -54,6 +54,8 @@ class BacktestReportPayload:
     input_summary: dict
     # Optional peak-day metrics (PMAPE / PTE + per-day breakdown)
     peak_metrics: dict = field(default_factory=dict)
+    # Optional interval metrics + per-h coverage (quantile-trained models)
+    probabilistic: dict = field(default_factory=dict)
     generated_at: str = field(
         default_factory=lambda: datetime.now().isoformat(timespec="seconds")
     )
@@ -83,6 +85,7 @@ def build_backtest_payload(
     input_df: Optional[pd.DataFrame],
     column_mapping: Optional[dict],
     title: Optional[str] = None,
+    probabilistic: Optional[dict] = None,
 ) -> BacktestReportPayload:
     """
     Build a BacktestReportPayload from a backtest result and per-window data.
@@ -103,6 +106,12 @@ def build_backtest_payload(
         input_df: Optional raw test DataFrame for the input preview section.
         column_mapping: Resolved column mapping.
         title: Optional report title.
+        probabilistic: Optional dict from the stochastic backtest pass
+            (``_run_probabilistic_backtest``).  Carries pooled interval
+            metrics, ``horizon_coverage`` and ``window_bands`` — the latter is
+            zipped into the per-window steps so the playback chart can shade
+            each re-forecast's prediction interval.  None / empty for point
+            models, in which case the report hides the section.
 
     Returns:
         BacktestReportPayload ready to be JSON-serialised and embedded in HTML.
@@ -152,6 +161,17 @@ def build_backtest_payload(
     windows_payload: list = []
     actual_pd = actual_series_inv.to_dataframe().iloc[:, 0]
 
+    # Per-window prediction bands, indexed by timestamp for alignment. The
+    # stochastic pass runs the same stride/start, so window i corresponds to
+    # window i — but we match on timestamp rather than trusting the ordering.
+    prob = probabilistic or {}
+    window_bands_raw = prob.get("window_bands") or []
+    band_lookup: list = []
+    for wb in window_bands_raw:
+        band_lookup.append({row["t"]: row for row in (wb or [])})
+
+    n_banded_steps = 0
+
     for idx, window in enumerate(windows_raw):
         origin_ts = window.start_time()
         steps_data: list = []
@@ -167,14 +187,25 @@ def build_backtest_payload(
                 window_actuals.append(actual_val)
                 window_predicted.append(pred_val)
 
-            steps_data.append(
-                {
-                    "h": i + 1,
-                    "t": _safe_iso(step_ts),
-                    "actual": _round(actual_val, 4),
-                    "predicted": _round(pred_val, 4),
-                }
-            )
+            step_iso = _safe_iso(step_ts)
+            step = {
+                "h": i + 1,
+                "t": step_iso,
+                "actual": _round(actual_val, 4),
+                "predicted": _round(pred_val, 4),
+            }
+
+            if idx < len(band_lookup):
+                b = band_lookup[idx].get(step_iso)
+                if b is not None:
+                    lo = _round(b.get("lower"), 4)
+                    hi = _round(b.get("upper"), 4)
+                    if lo is not None and hi is not None:
+                        step["lower"] = lo
+                        step["upper"] = hi
+                        n_banded_steps += 1
+
+            steps_data.append(step)
 
         # Per-window aggregate metrics
         if len(window_actuals) >= 1:
@@ -218,6 +249,35 @@ def build_backtest_payload(
     # ---- peak metrics (optional) ---------------------------------------
     peak_metrics = _round_peak_metrics(backtest_result.get("peak_metrics"))
 
+    # ---- probabilistic block --------------------------------------------
+    probabilistic_payload: dict = {}
+    if prob:
+        probabilistic_payload = {
+            "pinball_loss": _round(prob.get("pinball_loss"), 4),
+            "coverage": _round(prob.get("coverage"), 4),
+            "nominal_coverage": _round(prob.get("nominal_coverage"), 4),
+            "mean_interval_width": _round(prob.get("mean_interval_width"), 4),
+            "per_quantile_pinball": {
+                str(k): _round(v, 4)
+                for k, v in (prob.get("per_quantile_pinball") or {}).items()
+            },
+            "quantiles": [float(q) for q in (prob.get("quantiles") or [])],
+            "num_samples": prob.get("num_samples"),
+            "n_windows": prob.get("n_windows"),
+            "band": prob.get("band"),
+            "horizon_coverage": [
+                {
+                    "h": int(r.get("h")),
+                    "coverage": _round(r.get("coverage"), 4),
+                    "mean_interval_width": _round(r.get("mean_interval_width"), 4),
+                    "n": int(r.get("n", 0) or 0),
+                }
+                for r in (prob.get("horizon_coverage") or [])
+            ],
+            "n_banded_steps": n_banded_steps,
+            "has_band": bool(prob.get("band")) and n_banded_steps > 0,
+        }
+
     return BacktestReportPayload(
         meta=meta,
         metrics=metrics,
@@ -229,4 +289,5 @@ def build_backtest_payload(
         residual_analysis=residual_analysis,
         input_summary=input_summary,
         peak_metrics=peak_metrics,
+        probabilistic=probabilistic_payload,
     )

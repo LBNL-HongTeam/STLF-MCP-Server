@@ -24,6 +24,7 @@
       <a href="#residuals">Residuals</a>
       <a href="#parity">Parity</a>
       <a href="#error-profile">Error profile</a>
+      <a href="#probabilistic">Prediction intervals</a>
       <a href="#peak-metrics">Peak metrics</a>
       <a href="#input-preview">Input data</a>
       <a href="#residual-analysis">Residual analysis</a>
@@ -50,6 +51,7 @@
     <section id="actual-vs-pred">
       <h2>Actual vs predicted</h2>
       <div class="chart" id="chart-actual-vs-pred"></div>
+      <div class="note" id="actual-vs-pred-note" style="margin-top:8px"></div>
     </section>
 
     <section id="residuals">
@@ -78,6 +80,34 @@
         <div class="chart">
           <h3 style="margin-top:0">Day-of-week MAE</h3>
           <div id="chart-dow-mae"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="probabilistic">
+      <h2>Prediction intervals</h2>
+      <p class="note">
+        Interval quality for quantile-trained models. <strong>Coverage</strong>
+        is the fraction of actuals falling inside the widest central band and
+        should sit close to the nominal level; <strong>mean interval width</strong>
+        is the sharpness counterweight, since coverage can always be bought by
+        widening the band. <strong>Pinball loss</strong> scores both jointly.
+      </p>
+      <div class="metric-cards" id="probabilistic-cards"></div>
+      <div class="kv-grid" id="probabilistic-kv"></div>
+
+      <div class="chart-row">
+        <div class="chart">
+          <h3 style="margin-top:0">Pinball loss by quantile</h3>
+          <div id="chart-pinball"></div>
+        </div>
+        <div class="chart">
+          <h3 style="margin-top:0">Reliability diagram</h3>
+          <div id="chart-reliability"></div>
+          <div class="note" style="margin-top:8px">
+            Points on the diagonal indicate perfectly calibrated quantiles.
+            Above the line = quantiles too low; below = too high.
+          </div>
         </div>
       </div>
     </section>

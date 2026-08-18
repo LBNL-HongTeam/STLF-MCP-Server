@@ -189,6 +189,7 @@ def generate_backtest_report(
     include_residual_analysis: bool = True,
     peak_dates: Optional[list] = None,
     title: Optional[str] = None,
+    num_samples: int = 200,
 ) -> dict:
     """
     Generate a self-contained HTML backtest report for a trained model.
@@ -199,6 +200,9 @@ def generate_backtest_report(
       - A forecast playback slider that steps through every re-forecast window,
         showing the model's predicted trajectory overlaid on actual load.
       - An h-step-ahead RMSE bar chart showing how accuracy degrades with horizon.
+      - For quantile-trained models: a shaded prediction band on the playback
+        chart plus coverage and interval width broken out per horizon step,
+        which pooled interval metrics cannot reveal.
       - Overall backtest metrics (RMSE, MAE, MAPE, CV-RMSE, R²).
       - Hour-of-day and day-of-week MAE error profiles.
       - Optional residual analysis (mean residual, std, lag-1 autocorrelation).
@@ -222,6 +226,10 @@ def generate_backtest_report(
         peak_dates: Optional list of date strings ("YYYY-MM-DD") identifying
             peak demand days for PMAPE / PTE evaluation (Li et al. 2025).
         title: Optional human-friendly title for the report header.
+        num_samples: Monte-Carlo sample count for quantile-trained models.
+            Adds a Prediction intervals section with pooled interval metrics
+            and a coverage-by-horizon-step chart, plus a shaded band on the
+            playback chart.  Ignored for point models (default 200).
 
     Returns:
         Dict with output_html_path, file_size_bytes, n_windows, n_points,
@@ -245,6 +253,7 @@ def generate_backtest_report(
                 include_residual_analysis=include_residual_analysis,
                 peak_dates=peak_dates,
                 reconstruct_windows=True,
+                num_samples=num_samples,
             )
         except _ModelLoadError as e:
             return e.response
@@ -316,6 +325,7 @@ def generate_backtest_report(
             input_df=input_df,
             column_mapping=resolved_mapping,
             title=title,
+            probabilistic=core.get("probabilistic"),
         )
 
         html = build_backtest_report_html(payload)
@@ -585,6 +595,8 @@ def generate_inference_dashboard(
             longitude=longitude,
             timezone=timezone,
             title=effective_title,
+            quantiles=forecast_result.get("quantiles"),
+            num_samples=forecast_result.get("num_samples"),
         )
 
         out_path = Path(output_html_path)

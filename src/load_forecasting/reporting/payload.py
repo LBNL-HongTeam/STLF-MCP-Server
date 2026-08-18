@@ -36,6 +36,7 @@ class ReportPayload:
     aggregations: dict
     input_summary: dict
     peak_metrics: dict = field(default_factory=dict)
+    probabilistic: dict = field(default_factory=dict)
     generated_at: str = field(
         default_factory=lambda: datetime.now().isoformat(timespec="seconds")
     )
@@ -125,6 +126,45 @@ def _round_peak_metrics(pm: Optional[dict]) -> dict:
         for r in per_day
     ]
     return out
+
+
+def _round_probabilistic_metrics(pm: Optional[dict]) -> dict:
+    """Round the numeric fields of a probabilistic_metrics dict for embedding.
+
+    Returns an empty dict when ``pm`` is falsy so the report JS can hide the
+    section uniformly for point models and for probabilistic models whose
+    interval metrics could not be computed.
+    """
+    if not pm:
+        return {}
+    per_q = pm.get("per_quantile_pinball") or {}
+    return {
+        "pinball_loss": _round(pm.get("pinball_loss"), 4),
+        "coverage": _round(pm.get("coverage"), 4),
+        "nominal_coverage": _round(pm.get("nominal_coverage"), 4),
+        "mean_interval_width": _round(pm.get("mean_interval_width"), 4),
+        "per_quantile_pinball": {
+            str(k): _round(v, 4) for k, v in per_q.items()
+        },
+        "quantiles": [float(q) for q in (pm.get("quantiles") or [])],
+        "num_samples": pm.get("num_samples"),
+    }
+
+
+def _band_levels(quantiles: list[float]) -> Optional[dict]:
+    """Pick the widest symmetric central band from a list of quantile levels.
+
+    Returns ``{"lower": l, "upper": u, "nominal": u - l}`` for the outermost
+    pair straddling the median, or None when fewer than two non-median levels
+    are available (nothing to shade).
+    """
+    qs = sorted(float(q) for q in quantiles or [])
+    lows = [q for q in qs if q < 0.5]
+    highs = [q for q in qs if q > 0.5]
+    if not lows or not highs:
+        return None
+    lower, upper = lows[0], highs[-1]
+    return {"lower": lower, "upper": upper, "nominal": round(upper - lower, 4)}
 
 
 def _safe_iso(ts: Any) -> Optional[str]:
@@ -250,18 +290,50 @@ def build_report_payload(
     # ---- residual analysis ---------------------------------------------
     residual_analysis = eval_result.get("residual_analysis") or {}
 
+    # ---- probabilistic (interval) metrics -------------------------------
+    probabilistic = _round_probabilistic_metrics(
+        eval_result.get("probabilistic_metrics")
+    )
+    band = _band_levels(probabilistic.get("quantiles", [])) if probabilistic else None
+    if band:
+        probabilistic["band"] = band
+
     # ---- predictions series --------------------------------------------
     # Normalise types: ensure floats are JSON-finite, ISO strings for ts.
+    # For quantile models the outermost central band is emitted as explicit
+    # lower/upper keys so the chart JS can shade an area without re-deriving
+    # which levels to use.
+    quantile_keys = [f"q{q}" for q in probabilistic.get("quantiles", [])]
+    lower_key = f"q{band['lower']}" if band else None
+    upper_key = f"q{band['upper']}" if band else None
     series_predictions = []
+    n_banded = 0
     for row in predictions:
-        series_predictions.append(
-            {
-                "t": row.get("timestamp"),
-                "actual": _round(row.get("actual"), 4),
-                "predicted": _round(row.get("predicted"), 4),
-                "residual": _round(row.get("residual"), 4),
-            }
-        )
+        point = {
+            "t": row.get("timestamp"),
+            "actual": _round(row.get("actual"), 4),
+            "predicted": _round(row.get("predicted"), 4),
+            "residual": _round(row.get("residual"), 4),
+        }
+        # Per-level values feed the reliability diagram.
+        for k in quantile_keys:
+            v = _round(row.get(k), 4)
+            if v is not None:
+                point[k] = v
+        if lower_key:
+            lo = point.get(lower_key)
+            hi = point.get(upper_key)
+            if lo is not None and hi is not None:
+                point["lower"] = lo
+                point["upper"] = hi
+                n_banded += 1
+        series_predictions.append(point)
+
+    if probabilistic:
+        probabilistic["n_banded_points"] = n_banded
+        # No per-row quantile values came through (e.g. return_predictions was
+        # False when the bands were computed) — tell the JS not to draw a band.
+        probabilistic["has_band"] = bool(band) and n_banded > 0
 
     # ---- input target + covariates -------------------------------------
     series_input_target, series_covariates, input_summary = build_input_preview(
@@ -286,6 +358,7 @@ def build_report_payload(
         aggregations=aggregations,
         input_summary=input_summary,
         peak_metrics=peak_metrics,
+        probabilistic=probabilistic,
     )
 
 

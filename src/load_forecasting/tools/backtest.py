@@ -17,6 +17,9 @@ from ..core.evaluator import (
     compare_to_validation,
     calculate_metrics,
     calculate_horizon_metrics,
+    calculate_horizon_coverage,
+    calculate_probabilistic_metrics,
+    _maybe_inverse,
 )
 from ..core.frequency_utils import hours_to_steps
 from ._common import (
@@ -38,6 +41,143 @@ from ._common import (
 logger = logging.getLogger(__name__)
 
 
+def _band_levels(quantiles: list) -> Optional[tuple]:
+    """Return the outermost (lower, upper) quantile pair straddling the median.
+
+    None when fewer than two non-median levels exist (nothing to shade).
+    """
+    qs = sorted(float(q) for q in (quantiles or []))
+    lows = [q for q in qs if q < 0.5]
+    highs = [q for q in qs if q > 0.5]
+    if not lows or not highs:
+        return None
+    return lows[0], highs[-1]
+
+
+def _run_probabilistic_backtest(
+    *,
+    model,
+    metadata: dict,
+    model_type: str,
+    target_series,
+    past_cov,
+    future_cov,
+    lookback_steps: int,
+    horizon_steps: int,
+    stride_steps: int,
+    start_idx: int,
+    target_scaler,
+    num_samples: int,
+) -> dict:
+    """Run a stochastic rolling pass and derive interval quality metrics.
+
+    Returns ``{}`` for point models, for models that cannot sample, or when the
+    stochastic pass fails — the deterministic backtest is unaffected either way.
+
+    The returned dict carries pooled interval metrics plus the per-horizon-step
+    coverage decomposition and the per-window quantile bands used by the HTML
+    report's playback chart.
+    """
+    from darts import concatenate as darts_concatenate
+
+    config = metadata.get("config", {}) or {}
+    if not config.get("probabilistic"):
+        return {}
+    if not getattr(model, "supports_probabilistic_prediction", False):
+        return {}
+
+    quantiles = sorted({float(q) for q in (config.get("quantiles") or [])} | {0.5})
+    band = _band_levels(quantiles)
+    n_samples = max(1, int(num_samples))
+
+    try:
+        stochastic_raw = generate_predictions(
+            model, target_series, past_cov, lookback_steps, horizon_steps,
+            future_covariates=future_cov, model_type=model_type,
+            stride=stride_steps, start=start_idx, last_points_only=False,
+            num_samples=n_samples,
+        )
+    except Exception as e:
+        logger.warning("Probabilistic backtest pass failed: %s", e)
+        return {}
+
+    stochastic_windows = (
+        stochastic_raw if isinstance(stochastic_raw, list) else [stochastic_raw]
+    )
+    stochastic_windows = [
+        w for w in stochastic_windows if getattr(w, "n_samples", 1) > 1
+    ]
+    if not stochastic_windows:
+        logger.warning("Probabilistic backtest produced no stochastic samples")
+        return {}
+
+    out: dict = {
+        "quantiles": quantiles,
+        "num_samples": n_samples,
+        "n_windows": len(stochastic_windows),
+    }
+
+    # Pooled interval metrics over the whole backtest span.
+    try:
+        concat = darts_concatenate(stochastic_windows, ignore_time_axis=True)
+        quantile_forecasts = {q: concat.quantile(q) for q in quantiles}
+        pooled = calculate_probabilistic_metrics(
+            target_series[start_idx:], quantile_forecasts, scaler=target_scaler
+        )
+        out.update(pooled)
+    except Exception as e:
+        logger.warning("Pooled probabilistic backtest metrics failed: %s", e)
+
+    if band is None:
+        return out
+
+    lower_q, upper_q = band
+    out["band"] = {
+        "lower": lower_q,
+        "upper": upper_q,
+        "nominal": round(upper_q - lower_q, 4),
+    }
+
+    # The headline addition: coverage as a function of lead time.
+    try:
+        out["horizon_coverage"] = calculate_horizon_coverage(
+            stochastic_windows,
+            target_series[start_idx:],
+            lower_q,
+            upper_q,
+            scaler=target_scaler,
+        )
+    except Exception as e:
+        logger.warning("Horizon coverage failed: %s", e)
+        out["horizon_coverage"] = []
+
+    # Per-window bands for the report's forecast-playback overlay.
+    windows_bands: list = []
+    for w in stochastic_windows:
+        try:
+            lo = _maybe_inverse(w.quantile(lower_q), target_scaler)
+            hi = _maybe_inverse(w.quantile(upper_q), target_scaler)
+            windows_bands.append(
+                [
+                    {
+                        "t": ts.isoformat(),
+                        "lower": float(lv),
+                        "upper": float(hv),
+                    }
+                    for ts, lv, hv in zip(
+                        lo.time_index,
+                        lo.univariate_values(),
+                        hi.univariate_values(),
+                    )
+                ]
+            )
+        except Exception:
+            windows_bands.append([])
+    out["window_bands"] = windows_bands
+
+    return out
+
+
 def _run_backtest_core(
     model_id: str,
     csv_path: str,
@@ -48,6 +188,7 @@ def _run_backtest_core(
     peak_dates: Optional[list],
     *,
     reconstruct_windows: bool = False,
+    num_samples: int = 200,
 ) -> dict:
     """Shared rolling-backtest pipeline for backtest_model + generate_backtest_report.
 
@@ -169,6 +310,26 @@ def _run_backtest_core(
         "column_mapping_source": column_mapping_source,
     }
 
+    # ---- probabilistic (interval) backtest -------------------------------
+    # A second, stochastic rolling pass for quantile-trained models.  Point
+    # models skip this entirely, so they pay nothing.  The per-window
+    # structure is what makes coverage-by-horizon-step possible — that
+    # decomposition is unavailable from a single pooled test split.
+    prob_backtest = _run_probabilistic_backtest(
+        model=model,
+        metadata=metadata,
+        model_type=model_type,
+        target_series=target_series,
+        past_cov=past_cov,
+        future_cov=future_cov,
+        lookback_steps=lookback_steps,
+        horizon_steps=horizon_steps,
+        stride_steps=stride_steps,
+        start_idx=start_idx,
+        target_scaler=target_scaler,
+        num_samples=num_samples,
+    )
+
     result = {
         "model": model,
         "metadata": metadata,
@@ -186,6 +347,7 @@ def _run_backtest_core(
         "ml_warnings": ml_warnings,
         "resolved_mapping": resolved_mapping,
         "frequency": frequency,
+        "probabilistic": prob_backtest,
     }
 
     if not reconstruct_windows:
@@ -237,6 +399,7 @@ def backtest_model(
     output_csv_path: Optional[str] = None,
     include_residual_analysis: bool = False,
     peak_dates: Optional[list] = None,
+    num_samples: int = 200,
 ) -> dict:
     """
     Run a rolling-window backtest of a trained model on historical data.
@@ -259,12 +422,18 @@ def backtest_model(
             response.  Can be large for long series.
         output_csv_path: Optional path to write predictions as CSV.
         include_residual_analysis: If True, include residual statistics.
+        num_samples: Monte-Carlo sample count used when the model was trained
+            with probabilistic=True.  Drives a second, stochastic rolling pass
+            that yields ``probabilistic_metrics`` — pooled pinball/coverage/
+            width plus ``horizon_coverage``, the per-h-step-ahead coverage
+            decomposition.  Ignored for point models (default 200).
 
     Returns:
         Dict with success, model_id, model_type, backtest_metrics,
         comparison_to_validation, backtest_summary, and optionally
-        predictions, residual_analysis, peak_metrics, output_csv_path.
-        peak_metrics is only present when peak_dates is provided.
+        predictions, residual_analysis, peak_metrics, probabilistic_metrics,
+        output_csv_path.  peak_metrics is only present when peak_dates is
+        provided; probabilistic_metrics only for quantile-trained models.
     """
     try:
         try:
@@ -276,6 +445,7 @@ def backtest_model(
                 start_fraction=start_fraction,
                 include_residual_analysis=include_residual_analysis,
                 peak_dates=peak_dates,
+                num_samples=num_samples,
             )
         except _ModelLoadError as e:
             return e.response
@@ -317,6 +487,14 @@ def backtest_model(
             # Surface the peak headline (peak_mape, peak_timing_error_hours)
             # alongside the standard metrics; full detail stays in peak_metrics.
             _merge_peak_headline(response_data["backtest_metrics"], peak_metrics)
+
+        prob = core.get("probabilistic") or {}
+        if prob:
+            # Drop the per-window band payload — it exists for the HTML report
+            # and would bloat the tool response for long backtests.
+            response_data["probabilistic_metrics"] = {
+                k: v for k, v in prob.items() if k != "window_bands"
+            }
 
         if output_csv_path and return_predictions:
             pd.DataFrame(response_data["predictions"]).to_csv(output_csv_path, index=False)

@@ -183,12 +183,47 @@
   // ---------------------------------------------------------------------
   // Charts
   // ---------------------------------------------------------------------
+  // Extract [{t, lo, hi}] rows for the prediction band, if present.
+  function parseBand(arr) {
+    if (!Array.isArray(arr)) return [];
+    const out = [];
+    for (const row of arr) {
+      const t = row.t ? new Date(row.t) : null;
+      const lo = row.lower, hi = row.upper;
+      if (t && !isNaN(t) &&
+          lo !== null && lo !== undefined && isFinite(lo) &&
+          hi !== null && hi !== undefined && isFinite(hi)) {
+        out.push({ t: t, lo: +lo, hi: +hi });
+      }
+    }
+    return out;
+  }
+
   function renderActualVsPredicted() {
     const preds = DATA.series && DATA.series.predictions;
     if (!preds || !preds.length) return;
     const actual = parsePoints(preds, "actual").map(p => ({ ...p, series: "Actual" }));
     const predicted = parsePoints(preds, "predicted").map(p => ({ ...p, series: "Predicted" }));
     const all = actual.concat(predicted);
+
+    const prob = DATA.probabilistic || {};
+    const band = prob.has_band ? parseBand(preds) : [];
+    const bandLabel = (prob.band)
+      ? ("P" + Math.round(prob.band.lower * 100) + "–P" + Math.round(prob.band.upper * 100))
+      : "Prediction interval";
+
+    const marks = [Plot.ruleY([0], { stroke: "#e5e7eb" })];
+    if (band.length) {
+      // Shaded interval drawn first so the actual/predicted lines sit on top.
+      marks.push(Plot.areaY(band, {
+        x: "t", y1: "lo", y2: "hi",
+        fill: "#2563eb", fillOpacity: 0.16,
+      }));
+    }
+    marks.push(
+      Plot.line(all, { x: "t", y: "v", stroke: "series", strokeWidth: 1.2 }),
+      Plot.tip(all, Plot.pointerX({ x: "t", y: "v", stroke: "series", channels: { series: "series" } }))
+    );
 
     const chart = Plot.plot({
       width: 1100,
@@ -202,13 +237,19 @@
         domain: ["Actual", "Predicted"],
         range: ["#1f2937", "#2563eb"],
       },
-      marks: [
-        Plot.ruleY([0], { stroke: "#e5e7eb" }),
-        Plot.line(all, { x: "t", y: "v", stroke: "series", strokeWidth: 1.2 }),
-        Plot.tip(all, Plot.pointerX({ x: "t", y: "v", stroke: "series", channels: { series: "series" } })),
-      ],
+      marks: marks,
     });
     append("chart-actual-vs-pred", chart);
+
+    // Caption the shaded region so the band's nominal level is unambiguous.
+    const note = $("actual-vs-pred-note");
+    if (note) {
+      note.textContent = band.length
+        ? ("Shaded region: " + bandLabel + " prediction interval (" +
+           fmtNumber(band.length, 0) + " points, " +
+           fmtNumber(prob.num_samples, 0) + " Monte-Carlo samples).")
+        : "";
+    }
   }
 
   function renderResidualsOverTime() {
@@ -517,6 +558,129 @@
     }
   }
 
+  // ---------------------------------------------------------------------
+  // Probabilistic (interval) metrics — quantile-trained models only.
+  // ---------------------------------------------------------------------
+  function renderProbabilistic() {
+    const section = $("probabilistic");
+    const prob = DATA.probabilistic || {};
+    const hasAny = prob.pinball_loss !== null && prob.pinball_loss !== undefined;
+    if (!hasAny) {
+      if (section) section.style.display = "none";
+      return;
+    }
+    if (section) section.style.display = "";
+
+    // Summary cards. Coverage is shown against its nominal target because
+    // the gap between the two is the calibration result — coverage alone is
+    // not interpretable.
+    const cards = $("probabilistic-cards");
+    if (cards) {
+      cards.innerHTML = "";
+      const covStr = (prob.coverage === null || prob.coverage === undefined)
+        ? "—" : fmtNumber(prob.coverage * 100, 2) + "%";
+      const nomStr = (prob.nominal_coverage === null || prob.nominal_coverage === undefined)
+        ? null : "nominal: " + fmtNumber(prob.nominal_coverage * 100, 0) + "%";
+      cards.appendChild(makeMetricCard("Coverage", covStr, nomStr));
+
+      let calib = null;
+      if (prob.coverage !== null && prob.coverage !== undefined &&
+          prob.nominal_coverage !== null && prob.nominal_coverage !== undefined) {
+        const d = (prob.coverage - prob.nominal_coverage) * 100;
+        calib = (d >= 0 ? "+" : "") + fmtNumber(d, 2) + " pts vs nominal";
+      }
+      cards.appendChild(makeMetricCard(
+        "Calibration error",
+        calib === null ? "—" : calib.replace(" vs nominal", ""),
+        calib === null ? null : (prob.coverage >= prob.nominal_coverage
+          ? "conservative (wide)" : "overconfident (narrow)")
+      ));
+      cards.appendChild(makeMetricCard(
+        "Mean interval width",
+        fmtNumber(prob.mean_interval_width, 3),
+        "sharpness — lower is better"
+      ));
+      cards.appendChild(makeMetricCard(
+        "Pinball loss",
+        fmtNumber(prob.pinball_loss, 3),
+        "mean over quantile levels"
+      ));
+    }
+
+    const kv = $("probabilistic-kv");
+    if (kv) {
+      kv.innerHTML = "";
+      kv.appendChild(makeKV("Quantile levels", (prob.quantiles || []).join(", ") || "—"));
+      kv.appendChild(makeKV("Monte-Carlo samples", fmtNumber(prob.num_samples, 0)));
+      kv.appendChild(makeKV("Banded points", fmtNumber(prob.n_banded_points, 0)));
+    }
+
+    // Per-quantile pinball loss bar chart.
+    const perQ = prob.per_quantile_pinball || {};
+    const rows = Object.keys(perQ)
+      .map(k => ({ q: k, level: parseFloat(k), loss: perQ[k] }))
+      .filter(r => isFinite(r.level) && r.loss !== null && r.loss !== undefined)
+      .sort((a, b) => a.level - b.level);
+
+    const wrap = $("chart-pinball");
+    if (wrap && rows.length) {
+      wrap.innerHTML = "";
+      wrap.appendChild(Plot.plot({
+        width: 540,
+        height: 240,
+        marginLeft: 64,
+        marginBottom: 40,
+        x: { label: "Quantile level", domain: rows.map(r => r.q) },
+        y: { label: "Pinball loss", grid: true },
+        marks: [
+          Plot.barY(rows, { x: "q", y: "loss", fill: "#7c3aed", fillOpacity: 0.85 }),
+          Plot.ruleY([0]),
+          Plot.tip(rows, Plot.pointerX({ x: "q", y: "loss" })),
+        ],
+      }));
+    }
+
+    // Reliability diagram: empirical vs nominal exceedance for each level.
+    // A well-calibrated model tracks the diagonal.
+    const preds = (DATA.series && DATA.series.predictions) || [];
+    const relWrap = $("chart-reliability");
+    if (relWrap && rows.length && preds.length) {
+      const points = [];
+      for (const r of rows) {
+        const key = "q" + r.q;
+        let n = 0, below = 0;
+        for (const p of preds) {
+          const qv = p[key];
+          if (qv === null || qv === undefined || !isFinite(qv)) continue;
+          if (p.actual === null || p.actual === undefined || !isFinite(p.actual)) continue;
+          n++;
+          if (p.actual <= qv) below++;
+        }
+        if (n > 0) points.push({ nominal: r.level, empirical: below / n });
+      }
+      if (points.length) {
+        relWrap.innerHTML = "";
+        relWrap.appendChild(Plot.plot({
+          width: 540,
+          height: 240,
+          marginLeft: 64,
+          marginBottom: 40,
+          x: { label: "Nominal quantile", domain: [0, 1], grid: true },
+          y: { label: "Empirical fraction below", domain: [0, 1], grid: true },
+          marks: [
+            Plot.line([{ x: 0, y: 0 }, { x: 1, y: 1 }], {
+              x: "x", y: "y", stroke: "#b91c1c",
+              strokeDasharray: "4,3", strokeOpacity: 0.7,
+            }),
+            Plot.line(points, { x: "nominal", y: "empirical", stroke: "#7c3aed", strokeWidth: 1.6 }),
+            Plot.dot(points, { x: "nominal", y: "empirical", fill: "#7c3aed", r: 4 }),
+            Plot.tip(points, Plot.pointerX({ x: "nominal", y: "empirical" })),
+          ],
+        }));
+      }
+    }
+  }
+
   function renderResidualAnalysis() {
     const ra = DATA.residual_analysis || {};
     const grid = $("residual-analysis-grid");
@@ -596,6 +760,7 @@
     try { renderParity(); } catch (e) { console.error(e); }
     try { renderHourlyMAE(); } catch (e) { console.error(e); }
     try { renderDOWMAE(); } catch (e) { console.error(e); }
+    try { renderProbabilistic(); } catch (e) { console.error(e); }
     try { renderPeakMetrics(); } catch (e) { console.error(e); }
     try { renderInputPreview(); } catch (e) { console.error(e); }
     try { renderResidualAnalysis(); } catch (e) { console.error(e); }

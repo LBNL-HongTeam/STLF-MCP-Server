@@ -103,6 +103,21 @@ inputs:
       Paper winter peak window: ["2023-02-22","2023-02-23","2023-02-24","2023-02-25"]
       Paper summer peak window: ["2023-08-14","2023-08-15","2023-08-16","2023-08-17"]
 
+  - name: num_samples
+    type: integer
+    required: false
+    default: 200
+    description: >
+      Monte-Carlo sample count for models trained with probabilistic=True.
+      Triggers a second, stochastic rolling pass that adds a
+      probabilistic_metrics key: pooled pinball loss / coverage / interval
+      width, plus horizon_coverage — empirical coverage and mean interval
+      width broken out per h-step-ahead position. The per-horizon breakdown is
+      the diagnostic that pooled coverage cannot provide, since an
+      over-covered near horizon and an under-covered far horizon average to a
+      healthy-looking overall number. Ignored for point models, which pay no
+      extra cost.
+
 # ==============================================================================
 # OUTPUTS
 # ==============================================================================
@@ -205,6 +220,41 @@ outputs:
             peak_magnitude_error_pct: { type: number }
             peak_timing_error_hours: { type: number }
 
+  probabilistic_metrics:
+    type: object
+    description: >
+      Prediction-interval quality. Only present for models trained with
+      probabilistic=True.
+    properties:
+      pinball_loss: { type: number, description: "Mean pinball loss over quantile levels" }
+      coverage: { type: number, description: "Pooled empirical coverage of the widest central band" }
+      nominal_coverage: { type: number, description: "Target coverage, e.g. 0.8 for P10-P90" }
+      mean_interval_width: { type: number, units: "same as target", description: "Sharpness" }
+      per_quantile_pinball: { type: object, description: "Pinball loss keyed by quantile level" }
+      quantiles: { type: array, items: { type: number } }
+      num_samples: { type: integer }
+      n_windows: { type: integer, description: "Stochastic rolling windows evaluated" }
+      band:
+        type: object
+        description: Outermost quantile pair straddling the median
+        properties:
+          lower: { type: number }
+          upper: { type: number }
+          nominal: { type: number }
+      horizon_coverage:
+        type: array
+        description: >
+          Per-h-step-ahead interval calibration. Compare each entry's coverage
+          against nominal_coverage: entries below it are under-covered, meaning
+          the model is overconfident at that lead time.
+        items:
+          type: object
+          properties:
+            h: { type: integer, description: "Horizon step, 1 = one-step-ahead" }
+            coverage: { type: number }
+            mean_interval_width: { type: number }
+            n: { type: integer, description: "Aligned pairs at this step" }
+
 # ==============================================================================
 # NOTES
 # ==============================================================================
@@ -218,5 +268,9 @@ notes:
   - "Predictions array can be large; use output_csv_path for long series"
   - "Unlike evaluate_forecast_model, backtest_model allows custom start position and stride"
   - "Use generate_forecast for live forward predictions; use backtest_model for historical assessment"
+  - "probabilistic_metrics appears only for models trained with probabilistic=True (XGBoost, LSTM, TFT, TiDE, TSMixer)"
+  - "Prefer horizon_coverage over the pooled coverage figure: pooled coverage averages every lead time and can mask an over-covered h=1 offsetting an under-covered h=24"
+  - "Interval width should grow with h; a flat width profile alongside falling coverage means uncertainty is not being propagated"
+  - "The stochastic pass is a second rolling forecast — expect roughly double the runtime for quantile models"
   - "stride_hours maximum raised to 96 to support the paper's 96h horizon configuration"
   - "Use peak_dates with paper windows to compute PMAPE and PTE alongside aggregate metrics"

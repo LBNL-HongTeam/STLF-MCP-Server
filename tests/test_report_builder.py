@@ -406,3 +406,137 @@ class TestBuildHTML:
         assert out.exists()
         round_trip = out.read_text(encoding="utf-8")
         assert "window.__REPORT_DATA__" in round_trip
+
+
+# ---------------------------------------------------------------------------
+# Probabilistic prediction bands
+# ---------------------------------------------------------------------------
+
+
+def _probabilistic_eval_result(base: dict, quantiles=(0.1, 0.5, 0.9)) -> dict:
+    """Attach quantile values + probabilistic_metrics to a point eval result."""
+    result = dict(base)
+    preds = []
+    for row in base["predictions"]:
+        r = dict(row)
+        p = r["predicted"]
+        for q in quantiles:
+            # Symmetric synthetic band around the point forecast.
+            r[f"q{q}"] = p + (q - 0.5) * 20.0
+        preds.append(r)
+    result["predictions"] = preds
+    result["probabilistic_metrics"] = {
+        "pinball_loss": 0.42,
+        "coverage": 0.83,
+        "nominal_coverage": 0.8,
+        "mean_interval_width": 8.0,
+        "per_quantile_pinball": {str(q): 0.4 for q in quantiles},
+        "quantiles": list(quantiles),
+        "num_samples": 200,
+    }
+    return result
+
+
+class TestProbabilisticPayload:
+    def test_absent_for_point_model(self, sample_metadata, sample_eval_result):
+        payload = build_report_payload(
+            model_id="x",
+            model_metadata=sample_metadata,
+            eval_result=sample_eval_result,
+            input_df=None,
+            column_mapping=sample_metadata["column_mapping"],
+        )
+        assert payload.probabilistic == {}
+        # No band keys leak onto the prediction rows.
+        assert "lower" not in payload.series["predictions"][0]
+
+    def test_metrics_and_band_populated(self, sample_metadata, sample_eval_result):
+        payload = build_report_payload(
+            model_id="x",
+            model_metadata=sample_metadata,
+            eval_result=_probabilistic_eval_result(sample_eval_result),
+            input_df=None,
+            column_mapping=sample_metadata["column_mapping"],
+        )
+        prob = payload.probabilistic
+        assert prob["pinball_loss"] == 0.42
+        assert prob["coverage"] == 0.83
+        assert prob["mean_interval_width"] == 8.0
+        assert prob["quantiles"] == [0.1, 0.5, 0.9]
+        # Widest central band = outermost pair straddling the median.
+        assert prob["band"] == {"lower": 0.1, "upper": 0.9, "nominal": 0.8}
+        assert prob["has_band"] is True
+        assert prob["n_banded_points"] == len(payload.series["predictions"])
+
+    def test_band_values_on_prediction_rows(self, sample_metadata, sample_eval_result):
+        payload = build_report_payload(
+            model_id="x",
+            model_metadata=sample_metadata,
+            eval_result=_probabilistic_eval_result(sample_eval_result),
+            input_df=None,
+            column_mapping=sample_metadata["column_mapping"],
+        )
+        row = payload.series["predictions"][0]
+        # Per-level keys survive (they drive the reliability diagram) ...
+        assert "q0.1" in row and "q0.9" in row
+        # ... and the outermost pair is mirrored to lower/upper for the area mark.
+        assert row["lower"] == row["q0.1"]
+        assert row["upper"] == row["q0.9"]
+        assert row["lower"] < row["predicted"] < row["upper"]
+
+    def test_no_band_when_only_median_trained(
+        self, sample_metadata, sample_eval_result
+    ):
+        # A lone 0.5 level has no pair to shade between.
+        result = _probabilistic_eval_result(sample_eval_result, quantiles=(0.5,))
+        payload = build_report_payload(
+            model_id="x",
+            model_metadata=sample_metadata,
+            eval_result=result,
+            input_df=None,
+            column_mapping=sample_metadata["column_mapping"],
+        )
+        assert payload.probabilistic["has_band"] is False
+        assert "band" not in payload.probabilistic
+        assert "lower" not in payload.series["predictions"][0]
+
+    def test_missing_quantile_values_degrade_gracefully(
+        self, sample_metadata, sample_eval_result
+    ):
+        # Metrics present but per-row quantiles absent (return_predictions=False
+        # path): the section still renders, the band does not.
+        result = dict(sample_eval_result)
+        result["probabilistic_metrics"] = {
+            "pinball_loss": 0.42,
+            "coverage": 0.83,
+            "nominal_coverage": 0.8,
+            "mean_interval_width": 8.0,
+            "per_quantile_pinball": {},
+            "quantiles": [0.1, 0.5, 0.9],
+            "num_samples": 200,
+        }
+        payload = build_report_payload(
+            model_id="x",
+            model_metadata=sample_metadata,
+            eval_result=result,
+            input_df=None,
+            column_mapping=sample_metadata["column_mapping"],
+        )
+        assert payload.probabilistic["n_banded_points"] == 0
+        assert payload.probabilistic["has_band"] is False
+
+    def test_html_contains_probabilistic_section(
+        self, sample_metadata, sample_eval_result
+    ):
+        payload = build_report_payload(
+            model_id="x",
+            model_metadata=sample_metadata,
+            eval_result=_probabilistic_eval_result(sample_eval_result),
+            input_df=None,
+            column_mapping=sample_metadata["column_mapping"],
+        )
+        html = build_report_html(payload)
+        assert 'id="probabilistic"' in html
+        assert "chart-reliability" in html
+        assert "chart-pinball" in html
+        assert '"has_band": true' in html.replace("'", '"')
