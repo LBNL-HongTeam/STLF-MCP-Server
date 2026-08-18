@@ -66,6 +66,8 @@ SUBSTATION_2023 = os.path.join(AMI_DIR, "2023_substation_level.csv")
 FEEDER_2021_MERGED = os.path.join(AMI_DIR, "_merged_LENTS_HAPPY_VALLEY.csv")
 # For 2023 feeder test we build a single-target CSV from the LENTS feeder file
 FEEDER_2023_LENTS = os.path.join(AMI_DIR, "2023_feeder_level-LENTS_substation.csv")
+# Open-Meteo weather covering 2021-2023, merged into the 2023 feeder test CSV
+WEATHER_CSV = os.path.join(AMI_DIR, "2021-2023_openmeteo_weather.csv")
 
 # Paper peak windows (Section 4.2)
 WINTER_PEAK_DATES = ["2023-02-22", "2023-02-23", "2023-02-24", "2023-02-25"]
@@ -410,11 +412,20 @@ class TestPaperReplicationFeederLevel:
         self.train_csv = str(tmp_path / "feeder_train.csv")
         df21.to_csv(self.train_csv, index=False)
 
-        # 2023 test — extract from multi-column feeder file
+        # 2023 test — extract from multi-column feeder file and merge weather.
+        # The weather covariates are required: the model is trained with them,
+        # so the evaluation CSV must expose the same past-covariate columns.
         df23 = pd.read_csv(FEEDER_2023_LENTS)
         df23 = df23[[self.DT_COL, self.FEEDER_COL_2023]].rename(
             columns={self.FEEDER_COL_2023: "load_kwh"}
         )
+        df23[self.DT_COL] = pd.to_datetime(df23[self.DT_COL])
+
+        w = pd.read_csv(WEATHER_CSV)
+        w[self.DT_COL] = pd.to_datetime(w["date"])
+        keep_w = [self.DT_COL] + [c for c in self.WEATHER_COLS if c in w.columns]
+        df23 = df23.merge(w[keep_w], on=self.DT_COL, how="inner")
+
         self.test_csv = str(tmp_path / "feeder_test.csv")
         df23.to_csv(self.test_csv, index=False)
 
@@ -426,6 +437,7 @@ class TestPaperReplicationFeederLevel:
         self.test_mapping = {
             "datetime": self.DT_COL,
             "target": "load_kwh",
+            "past_covariates": [c for c in self.WEATHER_COLS if c in df23.columns],
         }
 
     def test_linear_regression_feeder(self):
