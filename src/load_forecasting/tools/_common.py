@@ -51,6 +51,61 @@ def _check_frequency_mismatch(loader: "ForecastingDataLoader", model_frequency: 
     return None
 
 
+def _check_covariate_mismatch(
+    loader: "ForecastingDataLoader",
+    metadata: dict,
+) -> Optional[str]:
+    """
+    Return an error string if the covariate columns available in the loaded CSV
+    do not match the ones the model was trained on, or None if they match.
+
+    This is a hard-block condition. The fitted covariate scalers expect an exact
+    column count and order; feeding a different set raises an opaque sklearn
+    error ("X has N features, but MinMaxScaler is expecting M features") deep
+    inside Darts. Checking up front lets us name the offending columns instead.
+
+    Note that ``to_darts_series`` silently drops mapped columns that are absent
+    from the DataFrame, so the comparison uses the intersection of the mapping
+    and the actual DataFrame columns.
+    """
+    trained_mapping = metadata.get("column_mapping") or {}
+    problems: list = []
+
+    for key, label in (
+        ("past_covariates", "past covariate"),
+        ("future_covariates", "future covariate"),
+    ):
+        expected = list(trained_mapping.get(key) or [])
+        if not expected:
+            continue
+        available = [
+            c for c in (loader.column_mapping.get(key) or [])
+            if c in loader.df.columns
+        ]
+        missing = [c for c in expected if c not in available]
+        extra = [c for c in available if c not in expected]
+        if not missing and not extra:
+            continue
+
+        detail = f"{label} columns do not match the model"
+        if missing:
+            detail += f"; missing from the CSV: {missing}"
+        if extra:
+            detail += f"; unexpected extra columns: {extra}"
+        problems.append(detail)
+
+    if not problems:
+        return None
+
+    return (
+        "Covariate mismatch: " + "; ".join(problems) + ". "
+        "The model was trained with a fixed covariate set and its fitted scalers "
+        "cannot be applied to a different one. Supply a CSV containing the same "
+        "covariate columns (and a column_mapping that declares them), or retrain "
+        "a model on the covariates you have."
+    )
+
+
 def _check_training_data_overlap(
     loader: "ForecastingDataLoader",
     metadata: dict,
@@ -371,6 +426,7 @@ def _load_and_scale_series(
     scalers: dict,
     frequency: str,
     dataframe=None,
+    metadata: Optional[dict] = None,
 ) -> tuple:
     """
     Load a CSV (or pre-loaded DataFrame) and apply pre-trained scalers.
@@ -387,6 +443,10 @@ def _load_and_scale_series(
         dataframe: Optional pre-loaded DataFrame to pass directly to the
             ForecastingDataLoader, skipping file I/O. Useful when the caller
             has already filtered out horizon rows before loading.
+        metadata: Optional model metadata. When supplied, the CSV's covariate
+            columns are validated against the training covariate set before the
+            fitted scalers are applied, so a mismatch produces a readable error
+            instead of an opaque sklearn feature-count failure.
 
     Returns:
         Tuple of (loader, target_series, past_covariate_series or None,
@@ -394,6 +454,7 @@ def _load_and_scale_series(
 
     Raises:
         DataLoadError: Propagated from ForecastingDataLoader on bad data.
+        _ModelLoadError: When the covariate set does not match the model's.
     """
     loader = ForecastingDataLoader(
         csv_path=csv_path,
@@ -401,6 +462,11 @@ def _load_and_scale_series(
         frequency=frequency,
         dataframe=dataframe,
     )
+    if metadata is not None:
+        cov_err = _check_covariate_mismatch(loader, metadata)
+        if cov_err:
+            raise _ModelLoadError(create_error_response(cov_err))
+
     if "target_scaler" in scalers and scalers["target_scaler"] is not None:
         loader.target_scaler = scalers["target_scaler"]
     if "covariate_scaler" in scalers and scalers["covariate_scaler"] is not None:

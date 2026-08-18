@@ -167,9 +167,12 @@ def generate_forecast(
                 scalers=scalers,
                 frequency=frequency,
                 dataframe=context_df,
+                metadata=ctx["metadata"],
             )
         except DataLoadError as e:
             return create_error_response(f"Failed to load context data: {e}")
+        except _ModelLoadError as e:
+            return e.response
 
         context_rows = len(loader.df)
         context_start = loader.df.index.min().isoformat()

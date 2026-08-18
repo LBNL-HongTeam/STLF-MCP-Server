@@ -229,6 +229,7 @@ def _run_backtest_core(
             column_mapping=resolved_mapping or None,
             scalers=scalers,
             frequency=frequency,
+            metadata=metadata,
         )
     except DataLoadError as e:
         raise _ModelLoadError(create_error_response(f"Failed to load data: {e}"))
