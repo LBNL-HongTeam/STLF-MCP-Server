@@ -24,6 +24,7 @@ from ._common import (
     _peak_metrics_safe,
     _merge_peak_headline,
     _check_frequency_mismatch,
+    _check_covariate_mismatch,
     _check_training_data_overlap,
     _check_short_test_data,
     _check_interpolation,
@@ -100,6 +101,11 @@ def evaluate_forecast_model(
         freq_err = _check_frequency_mismatch(loader, frequency)
         if freq_err:
             return create_error_response(freq_err)
+
+        # Hard block: covariate set differs from the one the scalers were fit on
+        cov_err = _check_covariate_mismatch(loader, metadata)
+        if cov_err:
+            return create_error_response(cov_err)
 
         # Use scalers from training
         if "target_scaler" in scalers:
