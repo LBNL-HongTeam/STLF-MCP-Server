@@ -16,8 +16,9 @@ Setup mirrors the paper exactly:
   - Seasonal split : 80/20 per season (split_train_val_seasonal, already default)
   - Metrics        : overall MAPE, PMAPE, PTE for winter/summer peak windows
 
-All tests skip automatically when the AMI data files are absent (same
-pattern as tests/integration/test_ami_data.py).
+Opt-in via ``pytest -m acceptance``. All tests skip automatically when
+the AMI data files are absent (same pattern as
+tests/integration/test_ami_data.py).
 
 No strict numeric assertions are made on MAPE values because results vary
 by hardware, random seed, and exact hyperparameters.  The tests assert:
@@ -44,6 +45,8 @@ from load_forecasting.tools import (
     evaluate_forecast_model,
     backtest_model,
 )
+
+pytestmark = pytest.mark.acceptance
 
 logger = logging.getLogger(__name__)
 

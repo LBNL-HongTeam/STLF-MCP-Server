@@ -337,6 +337,7 @@ class TestXGBoostTrainEvaluate:
 # Integration: LSTM training and evaluation
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow
 class TestLSTMTrainEvaluate:
     """
     LSTM tests use tiny hyperparameters (hidden_dim=8, n_epochs=2) to keep
@@ -480,6 +481,7 @@ class TestTuneModel:
         assert "n_estimators" in result["best_params"]
         assert result["best_params"]["n_estimators"] in [50, 100]
 
+    @pytest.mark.slow
     async def test_tune_lstm_runs(self, hourly_csv, temp_model_dir):
         """Tune LSTM with tiny search space and n_trials=2."""
         space = {
@@ -636,6 +638,7 @@ class TestARIMATrainEvaluate:
 # Integration: TFT training and evaluation
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow
 class TestTFTTrainEvaluate:
     """
     TFT tests use tiny hyperparameters (hidden_size=8, n_epochs=2) via the
@@ -769,6 +772,7 @@ class TestTFTTrainEvaluate:
 # Integration: TiDE training and evaluation
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow
 class TestTiDETrainEvaluate:
     """
     TiDE tests use tiny hyperparameters (hidden_size=8, n_epochs=2) via the
@@ -902,6 +906,7 @@ class TestTiDETrainEvaluate:
 # Integration: TSMixer training and evaluation
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow
 class TestTSMixerTrainEvaluate:
     """
     TSMixer tests use tiny hyperparameters (hidden_size=8, n_epochs=2) via the

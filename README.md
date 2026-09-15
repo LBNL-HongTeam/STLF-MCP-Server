@@ -532,8 +532,9 @@ environment variables (copy `.env.example` → `.env` for local overrides):
    numba/llvmlite incompatibility. Use Python 3.10–3.12.
 3. **Process crashes (SIGSEGV) on macOS after mixing XGBoost and Torch models**:
    an OpenMP duplicate-runtime conflict. `main.py` sets `KMP_DUPLICATE_LIB_OK=TRUE`
-   and `OMP_NUM_THREADS=1` automatically; if you launch the server without
-   `main.py`, export both env vars yourself before importing torch/xgboost.
+   and `OMP_NUM_THREADS=1` automatically, and `tests/conftest.py` applies the
+   same pre-import guard for pytest. If you launch Python through another entry
+   point, export both variables yourself before importing torch/xgboost.
 4. **LSTM/TFT wrong results or NaN losses on Apple Silicon (MPS)**: known
    PyTorch MPS bugs. Workarounds — for LSTM set `dropout=0` or `n_rnn_layers=1`;
    for TFT pass `accelerator="cpu"` via `model_kwargs`.
@@ -551,6 +552,28 @@ environment variables (copy `.env.example` → `.env` for local overrides):
 
    ```bash
    pytest
+   ```
+
+   Default `pytest` excludes `@pytest.mark.slow` and `@pytest.mark.acceptance`.
+   Torch training, year-long Naive walk-forward, and stride=1 backtests:
+
+   ```bash
+   pytest -m slow
+   ```
+
+   Real AMI pipeline, paper replication, and the AMI scale/model matrix:
+
+   ```bash
+   pytest -m acceptance
+   ```
+
+   Real TimesFM inference is also opt-in so routine tests never trigger the
+   pretrained-weight download. Point `STLF_TIMESFM_LOCAL_DIR` at a cached
+   checkpoint before running its smoke test:
+
+   ```bash
+   STLF_TIMESFM_LOCAL_DIR=/path/to/checkpoint \
+     pytest -m acceptance tests/integration/test_timesfm_acceptance.py
    ```
 
 5. Submit a pull request

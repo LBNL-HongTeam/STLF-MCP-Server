@@ -79,3 +79,8 @@ packages = ["src/load_forecasting"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "-m 'not acceptance and not slow'"
+markers = [
+    "acceptance: slow real-data / paper / TimesFM tests (run with pytest -m acceptance)",
+    "slow: torch training, year-long Naive walk-forward, stride=1 backtests (run with pytest -m slow)",
+]

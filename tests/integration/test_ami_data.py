@@ -1,6 +1,8 @@
 """
 Integration tests: pipeline validation on real AMI data at three spatial resolutions.
 
+Opt-in via ``pytest -m acceptance``.
+
 Covers subtask 1.2 (future covariates with real weather data) and subtask 1.4
 (multi-resolution pipeline validation) by running inspect_data → train_forecast_model
 → evaluate_forecast_model on:
@@ -29,6 +31,8 @@ from load_forecasting.tools import (
     evaluate_forecast_model,
     inspect_data,
 )
+
+pytestmark = pytest.mark.acceptance
 
 # ---------------------------------------------------------------------------
 # Paths to the real AMI data files
