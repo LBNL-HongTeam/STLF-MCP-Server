@@ -53,6 +53,25 @@ def calculate_metrics(
 
     # Align time series (they may have different lengths after historical_forecasts)
     actual_vals, predicted_vals = _align_series(actual, predicted)
+    return metrics_from_arrays(actual_vals, predicted_vals)
+
+
+def metrics_from_arrays(
+    actual_vals: np.ndarray, predicted_vals: np.ndarray
+) -> dict:
+    """Compute the standard point metrics from already-aligned value arrays.
+
+    Split out of :py:func:`calculate_metrics` so that callers holding several
+    disjoint (actual, predicted) pairs — e.g. the per-season chunks of a
+    seasonal train/validation split — can pool the residuals into a single set
+    of metrics instead of averaging per-chunk metrics, which would weight short
+    chunks equally with long ones.
+
+    Both arrays must already be on the original (un-scaled) axis and aligned
+    element-wise.
+    """
+    actual_vals = np.asarray(actual_vals, dtype=float)
+    predicted_vals = np.asarray(predicted_vals, dtype=float)
 
     if len(actual_vals) == 0:
         logger.warning("No overlapping data points for metrics calculation")

@@ -639,6 +639,101 @@ class ForecastingDataLoader:
         )
         return target_series, covariate_series, future_covariate_series
 
+    def contiguous_chunks(self) -> list[pd.DataFrame]:
+        """Split ``self.df`` at time discontinuities into contiguous blocks.
+
+        A discontinuity is any step in the DatetimeIndex larger than one
+        sampling interval.  For a contiguous frame this returns a single-element
+        list containing the whole frame.
+
+        This is the basis of :py:meth:`to_darts_series_chunks`, which avoids the
+        interpolation that :py:meth:`to_darts_series` would otherwise perform
+        across gaps introduced by a seasonal train/validation split.
+        """
+        if len(self.df) == 0:
+            return []
+        step = pd.tseries.frequencies.to_offset(self.frequency)
+        deltas = self.df.index.to_series().diff()
+        # First row has NaT delta; treat as continuation of the first chunk.
+        breaks = np.flatnonzero((deltas > step).to_numpy())
+        if len(breaks) == 0:
+            return [self.df]
+        bounds = [0, *breaks.tolist(), len(self.df)]
+        return [
+            self.df.iloc[a:b].copy()
+            for a, b in zip(bounds[:-1], bounds[1:])
+            if b > a
+        ]
+
+    def to_darts_series_chunks(
+        self, fit_scalers: bool = True
+    ) -> tuple[list[TimeSeries], Optional[list[TimeSeries]], Optional[list[TimeSeries]]]:
+        """Convert to *lists* of gap-free Darts TimeSeries, one per contiguous block.
+
+        Unlike :py:meth:`to_darts_series`, which reindexes to a regular frequency
+        and interpolates across any time gap, this method splits at the gaps and
+        returns one TimeSeries per contiguous run.  This matters after
+        :py:meth:`split_train_val_seasonal`, whose output is non-contiguous by
+        construction: passing that frame through ``to_darts_series`` fabricates
+        straight-line load across the multi-week holes the split just created
+        (~16% of a seasonally-split training year, ~69% of the validation year at
+        hourly resolution).  Darts global models accept a sequence of series
+        natively, so no interpolation is needed.
+
+        Scalers are fitted with ``global_fit=True`` so that a single set of
+        scaling parameters is shared across all chunks.  Per-series fitting (the
+        Darts default for sequence input) would scale each season independently
+        and destroy the between-season level information.
+
+        Args:
+            fit_scalers: If True, fit new scalers across all chunks jointly.
+                If False, apply the already-fitted scalers.
+
+        Returns:
+            Tuple of (target_series_list, past_covariate_list or None,
+            future_covariate_list or None).
+        """
+        target_col = self.column_mapping["target"]
+        time_col_name = self.df.index.name or "index"
+        chunks = self.contiguous_chunks()
+        if not chunks:
+            raise DataLoadError("Cannot build Darts series from an empty DataFrame.")
+
+        gap_filler = MissingValuesFiller(fill="auto")
+
+        def build(value_cols: list, scaler_attr: str):
+            cols = [c for c in value_cols if c in self.df.columns]
+            if not cols:
+                return None
+            series_list = []
+            for chunk in chunks:
+                s = TimeSeries.from_dataframe(
+                    chunk.reset_index(),
+                    time_col=time_col_name,
+                    value_cols=cols,
+                    freq=self.frequency,
+                    fill_missing_dates=True,
+                    fillna_value=None,
+                )
+                # Chunks are contiguous by construction, so this only patches
+                # genuine NaN values inside a block, never split-induced gaps.
+                series_list.append(gap_filler.transform(s))
+            if fit_scalers:
+                setattr(self, scaler_attr, Scaler(global_fit=True))
+                series_list = getattr(self, scaler_attr).fit_transform(series_list)
+            elif getattr(self, scaler_attr):
+                series_list = getattr(self, scaler_attr).transform(series_list)
+            return list(series_list)
+
+        target_series = build([target_col], "target_scaler")
+        covariate_series = build(
+            self.column_mapping.get("past_covariates", []), "covariate_scaler"
+        )
+        future_covariate_series = build(
+            self.column_mapping.get("future_covariates", []), "future_covariate_scaler"
+        )
+        return target_series, covariate_series, future_covariate_series
+
     # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------

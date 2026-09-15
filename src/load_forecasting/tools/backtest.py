@@ -19,6 +19,8 @@ from ..core.evaluator import (
     calculate_horizon_metrics,
     calculate_horizon_coverage,
     calculate_probabilistic_metrics,
+    metrics_from_arrays,
+    _align_series,
     _maybe_inverse,
 )
 from ..core.frequency_utils import hours_to_steps
@@ -52,6 +54,54 @@ def _band_levels(quantiles: list) -> Optional[tuple]:
     if not lows or not highs:
         return None
     return lows[0], highs[-1]
+
+
+def _flatten_windows(windows: list):
+    """Flatten rolling-forecast windows into one series on their real timestamps.
+
+    When the stride equals the horizon the windows tile the axis exactly and
+    this is a plain concatenation.  When the stride is shorter the windows
+    overlap; a flat series is then ambiguous, so the first occurrence of each
+    timestamp is kept, i.e. the prediction with the shortest lead time.
+
+    This series is only for display (report traces and the predictions CSV).
+    Metrics come from :py:func:`_pooled_window_metrics`, which scores every
+    window separately and therefore does not discard the overlapping forecasts.
+    """
+    from darts import TimeSeries
+
+    if not windows:
+        raise ValueError("No forecast windows to flatten.")
+    if len(windows) == 1:
+        return windows[0]
+
+    frames = [w.to_dataframe() for w in windows]
+    combined = pd.concat(frames)
+    combined = combined[~combined.index.duplicated(keep="first")].sort_index()
+    return TimeSeries.from_dataframe(combined, fill_missing_dates=True, fillna_value=None)
+
+
+def _pooled_window_metrics(target_series, windows: list, scaler):
+    """Pool residuals across rolling windows scored on their real timestamps.
+
+    Each window is aligned against the ground truth by timestamp, then all the
+    (actual, predicted) pairs are concatenated and scored once.  With
+    overlapping windows a timestamp contributes once per window that covers it,
+    at each of its lead times -- the convention used by Li et al. (2025), whose
+    prediction count is n_origins x horizon.
+    """
+    import numpy as np
+
+    actual_inv = _maybe_inverse(target_series, scaler)
+    a_parts, p_parts = [], []
+    for w in windows:
+        a_vals, p_vals = _align_series(actual_inv, _maybe_inverse(w, scaler))
+        if len(a_vals):
+            a_parts.append(a_vals)
+            p_parts.append(p_vals)
+    if not a_parts:
+        return calculate_metrics(target_series, windows[0], scaler=scaler)
+    return metrics_from_arrays(np.concatenate(a_parts), np.concatenate(p_parts))
 
 
 def _run_probabilistic_backtest(
@@ -274,7 +324,7 @@ def _run_backtest_core(
     # flat concatenated series; ML models return a list of windows.
     if isinstance(predictions_raw, list):
         windows_list = predictions_raw
-        predictions_concat = darts_concatenate(predictions_raw, ignore_time_axis=True)
+        predictions_concat = _flatten_windows(predictions_raw)
     else:
         predictions_concat = predictions_raw
         windows_list = []
@@ -287,7 +337,16 @@ def _run_backtest_core(
                     break
 
     target_scaler = loader.target_scaler
-    backtest_metrics = calculate_metrics(
+    # Score every window on its own real timestamps and pool the residuals.
+    # When stride < horizon the windows overlap, so a single flattened series
+    # cannot represent them: each (origin, step) pair is a distinct forecast and
+    # must count once.  Pooling also matches the convention of Li et al. (2025),
+    # whose totals are n_origins x horizon.  Concatenating first with
+    # ignore_time_axis=True would fabricate a time axis n_windows x horizon long
+    # and silently misalign actual against predicted.
+    backtest_metrics = _pooled_window_metrics(
+        target_series, windows_list, target_scaler
+    ) if windows_list else calculate_metrics(
         target_series[start_idx:], predictions_concat, scaler=target_scaler
     )
     validation_metrics = metadata.get("metrics", {}).get("validation", {})

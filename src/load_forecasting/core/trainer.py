@@ -50,7 +50,12 @@ except Exception:  # pragma: no cover - import guard
 # raises ImportError if the TimesFM backbone is unavailable.
 from .hybrid_timesfm import TimesFMResidualHybrid
 
-from .evaluator import calculate_metrics
+from .evaluator import (
+    _align_series,
+    _maybe_inverse,
+    calculate_metrics,
+    metrics_from_arrays,
+)
 from .frequency_utils import get_seasonality_steps
 
 logger = logging.getLogger(__name__)
@@ -184,6 +189,8 @@ def _cast_series_to_float32(
     import numpy as np
     if series is None:
         return None
+    if isinstance(series, (list, tuple)):
+        return [s.astype(np.float32) for s in series]
     return series.astype(np.float32)
 
 
@@ -412,6 +419,46 @@ _PL_LIGHTNING_MODELS: frozenset = frozenset({"LSTM", "TFT", "TiDE", "TSMixer"})
 # target-only TimesFM backbone with a Ridge regressor that consumes past and
 # future covariates externally.
 NO_COVARIATE_GLOBAL_MODELS: frozenset = frozenset({"TimesFM"})
+
+# Darts *global* models, i.e. those whose fit() accepts a sequence of
+# TimeSeries.  Only these can consume the gap-free per-season chunk lists
+# produced by ForecastingDataLoader.to_darts_series_chunks(); local models
+# (Naive*, ARIMA) and the TimesFM wrappers must be trained on a single
+# contiguous series and therefore fall back to a sequential split.
+MULTI_SERIES_MODELS: frozenset = frozenset(
+    {"LinearRegression", "XGBoost", "LSTM", "TFT", "TiDE", "TSMixer"}
+)
+
+
+def _as_series_list(series) -> list:
+    """Normalise a TimeSeries-or-list into a list."""
+    if series is None:
+        return []
+    return list(series) if isinstance(series, (list, tuple)) else [series]
+
+
+def _match_covariates(covariates, n: int):
+    """Broadcast a covariate series to align 1:1 with ``n`` target series.
+
+    Darts requires ``len(past_covariates) == len(series)`` when fitting on a
+    sequence.  The covariate series here always spans the *whole* dataset (so
+    that historical_forecasts can read past a split boundary), and Darts slices
+    it by timestamp per target series, so the same object is reused for every
+    chunk.
+    """
+    if covariates is None:
+        return None
+    if isinstance(covariates, (list, tuple)):
+        covs = list(covariates)
+        if len(covs) == n:
+            return covs
+        if len(covs) == 1:
+            return covs * n
+        raise ValueError(
+            f"Cannot align {len(covs)} covariate series with {n} target series."
+        )
+    return [covariates] * n
+
 
 # Models whose fit/predict happen outside the Darts historical_forecasts
 # dispatch pipeline (typically because they compose multiple sub-models).
@@ -911,16 +958,63 @@ _NULL_METRICS = {"rmse": None, "mae": None, "mape": None, "cv_rmse": None, "r_sq
 def _eval_split(
     model, series, covariates, future_covariates, lookback, horizon, model_type, scaler, label
 ) -> dict:
-    """Score a fitted model on one split, returning metrics (or null metrics on error)."""
+    """Score a fitted model on one split, returning metrics (or null metrics on error).
+
+    ``series`` may be a single TimeSeries or a list of gap-free chunks (from a
+    seasonal split).  For a list, each chunk is scored independently and the
+    actual/predicted pairs are pooled before the metrics are computed, so the
+    result is comparable to the single-series case.
+    """
     try:
-        pred = generate_predictions(
-            model, series, covariates, lookback, horizon,
-            future_covariates=future_covariates, model_type=model_type,
-            last_points_only=True,
+        chunks = _as_series_list(series)
+        if len(chunks) == 1:
+            pred = generate_predictions(
+                model, chunks[0], covariates, lookback, horizon,
+                future_covariates=future_covariates, model_type=model_type,
+                last_points_only=True,
+            )
+            if isinstance(pred, list):
+                pred = _darts_concatenate(pred, ignore_time_axis=True)
+            return calculate_metrics(chunks[0][lookback:], pred, scaler=scaler)
+
+        # Multi-chunk (seasonal) split: score each contiguous chunk on its own
+        # real timestamps, then pool the aligned residuals.  Concatenating the
+        # chunks first would require ignore_time_axis=True, which shifts the
+        # actual and predicted indices independently and destroys alignment.
+        import numpy as np
+        actual_parts, pred_parts = [], []
+        for chunk in chunks:
+            # A chunk shorter than one input+output window yields no forecast.
+            if len(chunk) <= lookback + horizon:
+                logger.debug(
+                    "Skipping %s chunk of %d steps (needs > %d).",
+                    label, len(chunk), lookback + horizon,
+                )
+                continue
+            pred = generate_predictions(
+                model, chunk, covariates, lookback, horizon,
+                future_covariates=future_covariates, model_type=model_type,
+                last_points_only=True,
+            )
+            if isinstance(pred, list):
+                pred = _darts_concatenate(pred, ignore_time_axis=True)
+            a_vals, p_vals = _align_series(
+                _maybe_inverse(chunk[lookback:], scaler),
+                _maybe_inverse(pred, scaler),
+            )
+            actual_parts.append(a_vals)
+            pred_parts.append(p_vals)
+
+        if not pred_parts:
+            logger.warning(
+                "No %s chunk was long enough to score (lookback=%d, horizon=%d).",
+                label, lookback, horizon,
+            )
+            return dict(_NULL_METRICS)
+
+        return metrics_from_arrays(
+            np.concatenate(actual_parts), np.concatenate(pred_parts)
         )
-        if isinstance(pred, list):
-            pred = _darts_concatenate(pred, ignore_time_axis=True)
-        return calculate_metrics(series[lookback:], pred, scaler=scaler)
     except Exception as e:
         logger.warning("Failed to compute %s metrics: %s", label, e)
         return dict(_NULL_METRICS)
@@ -965,6 +1059,25 @@ def train_model(
     """
     start_time = time.time()
 
+    # A seasonal split hands us a list of gap-free chunks rather than one
+    # contiguous series (see ForecastingDataLoader.to_darts_series_chunks).
+    # Darts global models fit on a sequence natively; covariates are broadcast
+    # to match its length because the same full-dataset covariate series backs
+    # every chunk.
+    _multi_series = isinstance(train_series, (list, tuple))
+    if _multi_series:
+        if model_type not in MULTI_SERIES_MODELS:
+            raise ValueError(
+                f"{model_type} cannot be trained on multiple series. Pass a single "
+                "contiguous TimeSeries (use a sequential split for this model type)."
+            )
+        train_series = list(train_series)
+        logger.info(
+            "Training %s on %d contiguous chunks (%d steps total, no gap "
+            "interpolation).",
+            model_type, len(train_series), sum(len(s) for s in train_series),
+        )
+
     # Create model
     # ARIMA only accepts future covariates; never treat past_covariates as usable for it.
     # TimesFM (and any other NO_COVARIATE_GLOBAL_MODELS) supports neither.
@@ -1008,17 +1121,12 @@ def train_model(
         if _cb is not None:
             model_kwargs["_loss_history_callback"] = _cb
 
-    # GPU accelerators run in float32 by default (precision="32"), while the
-    # source TimeSeries are float64.  MPS does not support float64 at all, and
-    # CUDA raises a dtype-mismatch error (mat1 double != mat2 float) when the
-    # data is float64 but the model params are float32.  Darts infers the model
-    # dtype from the TimeSeries data, so we cast all series to float32 before
-    # fit() whenever training on a GPU accelerator.
-    _use_gpu = (
-        model_type in _TORCH_MODEL_NAMES
-        and _requested_accelerator in ("mps", "cuda")
-    )
-    if _use_gpu:
+    # Lightning precision="32" initializes Torch model parameters as float32,
+    # while CSV-backed Darts TimeSeries are normally float64. Cast every Torch
+    # input consistently; otherwise explicit CPU training can fail in a model's
+    # first linear layer with ``double != float`` just as CUDA does, while MPS
+    # does not support float64 at all.
+    if model_type in _TORCH_MODEL_NAMES:
         train_series = _cast_series_to_float32(train_series)
         train_covariates = _cast_series_to_float32(train_covariates)
         train_future_covariates = _cast_series_to_float32(train_future_covariates)
@@ -1050,10 +1158,17 @@ def train_model(
                 # LinearRegression, XGBoost, TFT: past + future covariates.
                 # LSTM (BlockRNNModel): past covariates only (future are silently ignored).
                 fit_kwargs: dict = {}
+                _n = len(train_series) if _multi_series else None
                 if train_covariates is not None:
-                    fit_kwargs["past_covariates"] = train_covariates
+                    fit_kwargs["past_covariates"] = (
+                        _match_covariates(train_covariates, _n)
+                        if _multi_series else train_covariates
+                    )
                 if train_future_covariates is not None and model_type not in PAST_COVARIATE_ONLY_MODELS:
-                    fit_kwargs["future_covariates"] = train_future_covariates
+                    fit_kwargs["future_covariates"] = (
+                        _match_covariates(train_future_covariates, _n)
+                        if _multi_series else train_future_covariates
+                    )
                 # For native Darts Lightning models, pass the validation series
                 # so Lightning runs a per-epoch validation loop and logs
                 # val_loss — this populates the validation line on the
@@ -1061,12 +1176,28 @@ def train_model(
                 # (LinearRegression, XGBoost) do not accept val_* kwargs, and
                 # the TimesFM+Residual hybrid has a custom fit() signature that
                 # rejects them — so restrict to _PL_LIGHTNING_MODELS.
-                if model_type in _PL_LIGHTNING_MODELS and val_series is not None and len(val_series) > (lookback + horizon):
-                    fit_kwargs["val_series"] = val_series
+                # Keep only validation chunks long enough to yield at least one
+                # training sample; Darts raises if any series in the sequence is
+                # shorter than lookback + horizon.
+                _val_usable = [
+                    s for s in _as_series_list(val_series)
+                    if len(s) > (lookback + horizon)
+                ]
+                if model_type in _PL_LIGHTNING_MODELS and _val_usable:
+                    fit_kwargs["val_series"] = (
+                        _val_usable if len(_val_usable) > 1 else _val_usable[0]
+                    )
+                    _nv = len(_val_usable) if len(_val_usable) > 1 else None
                     if train_covariates is not None:
-                        fit_kwargs["val_past_covariates"] = val_covariates if val_covariates is not None else train_covariates
+                        _vc = val_covariates if val_covariates is not None else train_covariates
+                        fit_kwargs["val_past_covariates"] = (
+                            _match_covariates(_vc, _nv) if _nv else _vc
+                        )
                     if train_future_covariates is not None and model_type not in PAST_COVARIATE_ONLY_MODELS:
-                        fit_kwargs["val_future_covariates"] = val_future_covariates if val_future_covariates is not None else train_future_covariates
+                        _vf = val_future_covariates if val_future_covariates is not None else train_future_covariates
+                        fit_kwargs["val_future_covariates"] = (
+                            _match_covariates(_vf, _nv) if _nv else _vf
+                        )
                 model.fit(train_series, **fit_kwargs)
             elif model_type in FUTURE_ONLY_MODELS:
                 # ARIMA: only future covariates are supported (as exogenous variables)

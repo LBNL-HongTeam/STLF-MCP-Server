@@ -13,6 +13,8 @@ from ..core.trainer import (
     generate_predictions,
     _cast_series_to_float32,
     _normalize_device,
+    _eval_split,
+    _match_covariates,
     MIXED_COVARIATE_MODELS,
     _TORCH_MODEL_NAMES,
 )
@@ -196,7 +198,7 @@ def tune_model(
 
         # Seasonally-stratified split (falls back to sequential if < 4 seasons)
         # plus scaler fitting and full-covariate construction.
-        prep = _prepare_training_series(loader, validation_split)
+        prep = _prepare_training_series(loader, validation_split, model_type=model_type)
         train_loader = prep["train_loader"]
         train_series = prep["train_series"]
         val_series = prep["val_series"]
@@ -261,28 +263,22 @@ def tune_model(
                     else full_future_covariates
                 )
 
-                # Fit on train split
+                # Fit on train split.  A seasonal split yields a list of
+                # gap-free chunks; broadcast the covariates to match it.
                 fit_kwargs = {}
+                _n = len(_fit_series) if isinstance(_fit_series, list) else None
                 if train_covariates is not None:
-                    fit_kwargs["past_covariates"] = _fit_covariates
+                    fit_kwargs["past_covariates"] = _match_covariates(_fit_covariates, _n) \
+                        if _n else _fit_covariates
                 if train_future_covariates is not None and use_future:
-                    fit_kwargs["future_covariates"] = _fit_future_covariates
+                    fit_kwargs["future_covariates"] = _match_covariates(_fit_future_covariates, _n) \
+                        if _n else _fit_future_covariates
                 model.fit(_fit_series, **fit_kwargs)
 
-                # Score on validation split
-                val_pred = generate_predictions(
-                    model, val_series, full_covariates, lookback_steps, horizon_steps,
-                    future_covariates=full_future_covariates,
-                    model_type=model_type,
-                    last_points_only=True,
-                )
-                if isinstance(val_pred, list):
-                    from darts import concatenate as _dcat
-                    val_pred = _dcat(val_pred, ignore_time_axis=True)
-                metrics = calculate_metrics(
-                    val_series[lookback_steps:],
-                    val_pred,
-                    scaler=scaler,
+                # Score on validation split (pooled across chunks by _eval_split)
+                metrics = _eval_split(
+                    model, val_series, full_covariates, full_future_covariates,
+                    lookback_steps, horizon_steps, model_type, scaler, "validation",
                 )
                 cv_rmse = metrics.get("cv_rmse") or float("inf")
 

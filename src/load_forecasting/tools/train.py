@@ -16,6 +16,7 @@ from ..core.trainer import (
     train_model as _train_model,
     get_available_models,
     _normalize_device,
+    MULTI_SERIES_MODELS,
     PROBABILISTIC_MODELS,
     validate_quantiles,
 )
@@ -34,6 +35,74 @@ from ._common import (
 from .inspection import inspect_data
 
 logger = logging.getLogger(__name__)
+
+# Keyword arguments train_forecast_model computes itself and forwards to the
+# trainer.  Allowing a caller to override them through model_kwargs would let
+# the tool's own validated arguments be silently contradicted.
+_RESERVED_MODEL_KWARGS = frozenset({
+    "train_series", "val_series", "model_type", "lookback", "horizon",
+    "train_covariates", "val_covariates", "train_future_covariates",
+    "val_future_covariates", "scaler", "frequency", "accelerator",
+    "probabilistic", "quantiles",
+})
+
+# Learning-rate schedulers addressable by name.  MCP arguments arrive as JSON,
+# so a scheduler cannot be passed as a Python class; callers name it instead
+# and the class is resolved here.  Extend this map rather than importing
+# arbitrary attributes by name, which would be an code-execution vector.
+_LR_SCHEDULERS = (
+    "CosineAnnealingLR", "CosineAnnealingWarmRestarts", "StepLR",
+    "MultiStepLR", "ExponentialLR", "ReduceLROnPlateau", "OneCycleLR",
+    "LinearLR", "ConstantLR",
+)
+
+
+def _resolve_model_kwargs(model_kwargs: Optional[dict]) -> dict:
+    """
+    Validate ``model_kwargs`` and resolve JSON-friendly aliases.
+
+    Raises ValueError with an actionable message on bad input.
+    """
+    if model_kwargs is None:
+        return {}
+    if not isinstance(model_kwargs, dict):
+        raise ValueError(
+            f"model_kwargs must be a dict of keyword arguments, got "
+            f"{type(model_kwargs).__name__}."
+        )
+
+    clashes = sorted(set(model_kwargs) & _RESERVED_MODEL_KWARGS)
+    if clashes:
+        raise ValueError(
+            f"model_kwargs may not override arguments that "
+            f"train_forecast_model sets itself: {clashes}. "
+            f"Use the tool's own parameters instead (for example device= "
+            f"rather than accelerator=, probabilistic= rather than likelihood "
+            f"settings)."
+        )
+
+    resolved = dict(model_kwargs)
+
+    # Accept a scheduler named as a string, e.g.
+    #   {"lr_scheduler_cls": "CosineAnnealingLR",
+    #    "lr_scheduler_kwargs": {"T_max": 50}}
+    sched = resolved.get("lr_scheduler_cls")
+    if isinstance(sched, str):
+        if sched not in _LR_SCHEDULERS:
+            raise ValueError(
+                f"Unknown lr_scheduler_cls '{sched}'. Supported: "
+                f"{list(_LR_SCHEDULERS)}."
+            )
+        try:
+            import torch.optim.lr_scheduler as _sched_mod
+        except ImportError as e:  # pragma: no cover - torch is a hard dep
+            raise ValueError(
+                f"lr_scheduler_cls requires PyTorch, which is not "
+                f"importable: {e}"
+            ) from e
+        resolved["lr_scheduler_cls"] = getattr(_sched_mod, sched)
+
+    return resolved
 
 
 def _apply_gaussian_noise(
@@ -73,24 +142,63 @@ def _apply_gaussian_noise(
     return df
 
 
-def _prepare_training_series(loader, validation_split: float, post_split_hook=None) -> dict:
+def _prepare_training_series(
+    loader,
+    validation_split: float,
+    post_split_hook=None,
+    model_type: str = "LinearRegression",
+) -> dict:
     """Split a loader seasonally, fit scalers, and build all Darts series.
 
     ``post_split_hook`` (if given) is called with the train_loader after the
     split but before scalers are fit — used by train_forecast_model to inject
     weather-noise augmentation into the training DataFrame only.
 
+    Split strategy depends on ``model_type``:
+
+    * **Global models** (``MULTI_SERIES_MODELS``: LinearRegression, XGBoost,
+      LSTM, TFT, TiDE, TSMixer) get the seasonal split as a *list* of gap-free
+      per-season chunks.  A seasonal split is non-contiguous by construction,
+      and collapsing it into one regular-frequency series would interpolate
+      straight-line load across the multi-week holes it creates (~16% of a
+      training year, ~69% of a validation year at hourly resolution).  Darts
+      global models fit on a sequence of series natively, so the gaps are simply
+      never bridged.
+    * **Local / single-series models** (Naive*, ARIMA, TimesFM*) cannot fit a
+      sequence, so they fall back to the sequential (contiguous) split, which
+      also introduces no synthetic data.  Seasonal coverage is traded for split
+      integrity; this is logged.
+
     Returns a dict with train_loader, val_loader, train_series, val_series,
     train_covariates, train_future_covariates, full_covariates,
-    full_future_covariates, and scaler.
+    full_future_covariates, scaler, and split_info.
     """
-    train_loader, val_loader = loader.split_train_val_seasonal(validation_split)
+    use_chunks = model_type in MULTI_SERIES_MODELS
+
+    if use_chunks:
+        train_loader, val_loader = loader.split_train_val_seasonal(validation_split)
+        split_strategy = "seasonal_chunked"
+    else:
+        train_loader, val_loader = loader.split_train_val(validation_split)
+        split_strategy = "sequential"
+        logger.info(
+            "%s cannot fit a sequence of series; using a contiguous sequential "
+            "split instead of the seasonal split to avoid interpolating across "
+            "split-induced gaps.",
+            model_type,
+        )
 
     if post_split_hook is not None:
         post_split_hook(train_loader)
 
-    train_series, train_covariates, train_future_covariates = (
-        train_loader.to_darts_series(fit_scalers=True)
+    to_series = (
+        (lambda ldr, fit: ldr.to_darts_series_chunks(fit_scalers=fit))
+        if use_chunks
+        else (lambda ldr, fit: ldr.to_darts_series(fit_scalers=fit))
+    )
+
+    train_series, train_covariates, train_future_covariates = to_series(
+        train_loader, True
     )
 
     # Propagate fitted scalers to val + full loaders for consistent scaling
@@ -99,10 +207,25 @@ def _prepare_training_series(loader, validation_split: float, post_split_hook=No
         tgt.covariate_scaler = train_loader.covariate_scaler
         tgt.future_covariate_scaler = train_loader.future_covariate_scaler
 
-    val_series, _, _ = val_loader.to_darts_series(fit_scalers=False)
+    val_series, _, _ = to_series(val_loader, False)
     # Full-dataset covariates so historical_forecasts can read into the
-    # validation window without index out-of-bounds.
+    # validation window without index out-of-bounds.  ``loader`` is the
+    # unsplit frame and is therefore contiguous, so the single-series
+    # conversion is correct here regardless of the split strategy.
     _, full_covariates, full_future_covariates = loader.to_darts_series(fit_scalers=False)
+
+    def _n_steps(s):
+        return sum(len(x) for x in s) if isinstance(s, (list, tuple)) else len(s)
+
+    split_info = {
+        "strategy": split_strategy,
+        "train_chunks": len(train_series) if isinstance(train_series, list) else 1,
+        "validation_chunks": len(val_series) if isinstance(val_series, list) else 1,
+        "train_steps": _n_steps(train_series),
+        "validation_steps": _n_steps(val_series),
+        "interpolated_train_steps": _n_steps(train_series) - len(train_loader.df),
+        "interpolated_validation_steps": _n_steps(val_series) - len(val_loader.df),
+    }
 
     return {
         "train_loader": train_loader,
@@ -114,6 +237,7 @@ def _prepare_training_series(loader, validation_split: float, post_split_hook=No
         "full_covariates": full_covariates,
         "full_future_covariates": full_future_covariates,
         "scaler": train_loader.target_scaler,
+        "split_info": split_info,
     }
 
 
@@ -157,6 +281,7 @@ def train_forecast_model(
     device: Optional[str] = None,
     probabilistic: bool = False,
     quantiles: Optional[list] = None,
+    model_kwargs: Optional[dict] = None,
 ) -> dict:
     """
     Train a forecasting model on historical building load data.
@@ -192,6 +317,33 @@ def train_forecast_model(
             (0, 1)).  Defaults to [0.1, 0.5, 0.9] (P10/P50/P90 — a median plus
             an 80% central interval).  0.5 is always included so a median point
             forecast is available.
+        model_kwargs: Algorithm-specific settings forwarded to the underlying
+            Darts model constructor, for settings the tool does not expose as
+            named parameters.  Accepted keys depend on the model type; unknown
+            keys raise an error from Darts rather than being ignored.  Common
+            uses for the PyTorch models are ``n_epochs``, ``batch_size``,
+            ``dropout``, ``optimizer_kwargs``, and early stopping via
+            ``pl_trainer_kwargs``.  For XGBoost, ``n_estimators`` and
+            ``max_depth``.
+
+            Because MCP arguments arrive as JSON, a learning-rate scheduler is
+            named as a string and resolved to the corresponding
+            ``torch.optim.lr_scheduler`` class.  For example, the training
+            schedule of Li et al. (2025) is:
+
+                model_kwargs={
+                    "n_epochs": 50,
+                    "optimizer_kwargs": {"lr": 1e-3, "weight_decay": 1e-5},
+                    "lr_scheduler_cls": "CosineAnnealingLR",
+                    "lr_scheduler_kwargs": {"T_max": 50},
+                }
+
+            Keys that train_forecast_model sets itself (``accelerator``,
+            ``probabilistic``, ``quantiles``, the series and covariate
+            arguments, ``lookback``, ``horizon``, ``frequency``) are rejected;
+            use the tool's own parameters for those.  Use tune_model instead
+            when the aim is to search over these values rather than to set
+            them.
 
     Returns:
         Dict with model_id, metrics, and data summary
@@ -209,6 +361,12 @@ def train_forecast_model(
         # Validate/resolve compute device (cuda > mps > cpu when auto).
         try:
             resolved_device = _normalize_device(device)
+        except ValueError as e:
+            return create_error_response(str(e))
+
+        # Validate/resolve algorithm-specific passthrough settings.
+        try:
+            resolved_model_kwargs = _resolve_model_kwargs(model_kwargs)
         except ValueError as e:
             return create_error_response(str(e))
 
@@ -315,7 +473,9 @@ def train_forecast_model(
 
         # Seasonally-stratified split (falls back to sequential if < 4 seasons)
         # plus scaler fitting and full-covariate construction.
-        prep = _prepare_training_series(loader, validation_split, post_split_hook=_augment)
+        prep = _prepare_training_series(
+            loader, validation_split, post_split_hook=_augment, model_type=model_type
+        )
         train_loader = prep["train_loader"]
         val_loader = prep["val_loader"]
         train_series = prep["train_series"]
@@ -326,6 +486,7 @@ def train_forecast_model(
         # Update data summary with split info
         data_summary["training_samples"] = len(train_loader.df)
         data_summary["validation_samples"] = len(val_loader.df)
+        data_summary["split"] = prep["split_info"]
 
         logger.info(
             f"Training with lookback={lookback_hours}h ({lookback_steps} steps), "
@@ -352,6 +513,7 @@ def train_forecast_model(
             accelerator=resolved_device,
             probabilistic=probabilistic,
             quantiles=resolved_quantiles,
+            **resolved_model_kwargs,
         )
 
         # Save to registry
@@ -365,6 +527,10 @@ def train_forecast_model(
             "validation_split": validation_split,
             "probabilistic": probabilistic,
             "quantiles": resolved_quantiles,
+            # Stored as supplied by the caller (JSON-safe) rather than after
+            # resolution, so the metadata stays serialisable and the recorded
+            # value can be fed straight back into a later call.
+            "model_kwargs": model_kwargs or None,
         }
 
         model_path = _save_trained_model(
