@@ -1,5 +1,7 @@
 """Integration tests for MCP tools."""
 
+import json
+
 import pytest
 import pandas as pd
 import tempfile
@@ -82,6 +84,23 @@ class TestTrainForecastModel:
         assert result["model_type"] == "NaiveMean"
 
     @pytest.mark.asyncio
+    async def test_train_naive_moving_average(
+        self, sample_hourly_csv, temp_model_dir
+    ):
+        """Exercise the remaining target-only baseline through the tool layer."""
+        result = train_forecast_model(
+            csv_path=sample_hourly_csv,
+            model_type="NaiveMovingAverage",
+            lookback_hours=24,
+            horizon_hours=6,
+            building_name="moving_average_test",
+        )
+
+        assert result["success"] is True, result.get("error")
+        assert result["model_type"] == "NaiveMovingAverage"
+        assert result["validation_metrics"]["cv_rmse"] is not None
+
+    @pytest.mark.asyncio
     async def test_train_invalid_model_type(self, sample_hourly_csv, temp_model_dir):
         """Test error on invalid model type."""
         result = train_forecast_model(
@@ -101,6 +120,113 @@ class TestTrainForecastModel:
 
         assert result["success"] is False
         assert "not found" in result["error"]
+
+
+def _config_of(model_id):
+    """Read the persisted config block for a saved model."""
+    meta_path = ModelRegistry().base_dir / model_id / "metadata.json"
+    with open(meta_path, encoding="utf-8") as f:
+        return json.load(f)["config"]
+
+
+class TestModelKwargsPassthrough:
+    """Tests for the model_kwargs passthrough on train_forecast_model."""
+
+    @pytest.mark.asyncio
+    async def test_model_kwargs_reaches_the_model(
+        self, sample_hourly_csv, temp_model_dir
+    ):
+        """A value passed through model_kwargs is applied to the estimator."""
+        result = train_forecast_model(
+            csv_path=sample_hourly_csv,
+            model_type="XGBoost",
+            lookback_hours=24,
+            horizon_hours=6,
+            column_mapping={
+                "datetime": "timestamp",
+                "target": "electricity_kwh",
+            },
+            model_kwargs={"n_estimators": 7},
+        )
+
+        assert result["success"] is True, result.get("error")
+
+        # The setting must survive into the persisted metadata so the run can
+        # be reproduced from the registry alone.
+        assert _config_of(result["model_id"])["model_kwargs"] == {"n_estimators": 7}
+
+    @pytest.mark.asyncio
+    async def test_model_kwargs_rejects_reserved_keys(
+        self, sample_hourly_csv, temp_model_dir
+    ):
+        """Keys the tool sets itself cannot be overridden silently."""
+        result = train_forecast_model(
+            csv_path=sample_hourly_csv,
+            model_type="XGBoost",
+            column_mapping={
+                "datetime": "timestamp",
+                "target": "electricity_kwh",
+            },
+            model_kwargs={"accelerator": "cpu"},
+        )
+
+        assert result["success"] is False
+        assert "accelerator" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_model_kwargs_rejects_unknown_scheduler(
+        self, sample_hourly_csv, temp_model_dir
+    ):
+        """An unrecognised scheduler name is refused by name, not imported."""
+        result = train_forecast_model(
+            csv_path=sample_hourly_csv,
+            model_type="XGBoost",
+            column_mapping={
+                "datetime": "timestamp",
+                "target": "electricity_kwh",
+            },
+            model_kwargs={"lr_scheduler_cls": "os.system"},
+        )
+
+        assert result["success"] is False
+        assert "Unknown lr_scheduler_cls" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_scheduler_name_resolves_to_torch_class(self):
+        """A supported scheduler name resolves to the torch class."""
+        torch_sched = pytest.importorskip("torch.optim.lr_scheduler")
+        from load_forecasting.tools.train import _resolve_model_kwargs
+
+        resolved = _resolve_model_kwargs(
+            {
+                "n_epochs": 50,
+                "optimizer_kwargs": {"lr": 1e-3, "weight_decay": 1e-5},
+                "lr_scheduler_cls": "CosineAnnealingLR",
+                "lr_scheduler_kwargs": {"T_max": 50},
+            }
+        )
+
+        assert resolved["lr_scheduler_cls"] is torch_sched.CosineAnnealingLR
+        # Everything else is forwarded untouched.
+        assert resolved["n_epochs"] == 50
+        assert resolved["lr_scheduler_kwargs"] == {"T_max": 50}
+
+    @pytest.mark.asyncio
+    async def test_model_kwargs_absent_by_default(
+        self, sample_hourly_csv, temp_model_dir
+    ):
+        """Omitting model_kwargs leaves behaviour unchanged."""
+        result = train_forecast_model(
+            csv_path=sample_hourly_csv,
+            model_type="LinearRegression",
+            column_mapping={
+                "datetime": "timestamp",
+                "target": "electricity_kwh",
+            },
+        )
+
+        assert result["success"] is True, result.get("error")
+        assert _config_of(result["model_id"])["model_kwargs"] is None
 
 
 class TestListModels:

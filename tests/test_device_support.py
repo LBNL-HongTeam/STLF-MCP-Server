@@ -194,3 +194,45 @@ def test_train_tool_accepts_cpu_device(monkeypatch, tmp_path):
         device="cpu",
     )
     assert resp["success"] is True, resp.get("error")
+
+
+def test_cpu_torch_training_casts_all_series_to_float32(monkeypatch):
+    """CPU Torch models must not mix float64 CSV series with float32 weights."""
+    import numpy as np
+    import pandas as pd
+    from darts import TimeSeries
+
+    from load_forecasting.core import trainer
+
+    index = pd.date_range("2024-01-01", periods=160, freq="h")
+    target = TimeSeries.from_times_and_values(index, np.arange(160, dtype=np.float64))
+    covariates = TimeSeries.from_times_and_values(
+        index, np.column_stack([np.arange(160), np.ones(160)]).astype(np.float64)
+    )
+    seen = {}
+
+    class DummyTorchModel:
+        def fit(self, series, **kwargs):
+            seen["target"] = series.dtype
+            seen["past"] = kwargs["past_covariates"].dtype
+            seen["val"] = kwargs["val_series"].dtype
+            seen["val_past"] = kwargs["val_past_covariates"].dtype
+
+    monkeypatch.setattr(trainer, "create_model", lambda *args, **kwargs: DummyTorchModel())
+    monkeypatch.setattr(
+        trainer, "_eval_split", lambda *args, **kwargs: trainer._NULL_METRICS.copy()
+    )
+    monkeypatch.setattr(trainer, "_make_loss_history_callback", lambda: (None, None))
+
+    trainer.train_model(
+        train_series=target,
+        val_series=target,
+        model_type="TiDE",
+        lookback=24,
+        horizon=6,
+        train_covariates=covariates,
+        val_covariates=covariates,
+        accelerator="cpu",
+    )
+
+    assert set(seen.values()) == {np.dtype("float32")}

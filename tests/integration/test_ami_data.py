@@ -1,5 +1,5 @@
 """
-Integration tests: pipeline validation on real AMI data at three spatial resolutions.
+Integration tests: pipeline validation on real AMI data across aggregation scales.
 
 Opt-in via ``pytest -m acceptance``.
 
@@ -10,6 +10,7 @@ Covers subtask 1.2 (future covariates with real weather data) and subtask 1.4
   - District level:   data/examples/AMI/2021_city_level.csv
   - Substation level: data/examples/AMI/2021_substation_level.csv
   - Feeder level:     data/examples/AMI/2021_feeder_level-GLENDOVEER_substation.csv
+  - Neighborhood proxy: the smallest available feeder circuit (583 customers)
 
 Weather data (2021-2023_openmeteo_weather.csv) is merged with each load dataset
 to supply past_covariates (T_out, RH_out) and, in one dedicated test, as
@@ -49,6 +50,7 @@ _WEATHER_CSV = _AMI_DIR / "2021-2023_openmeteo_weather.csv"
 _CITY_TARGET = "City (n=41703)"
 _SUBSTATION_TARGET = "GLENDOVEER (n=9214)"
 _FEEDER_TARGET = "GLENDOVEER-13599 (n=1910)"
+_NEIGHBORHOOD_PROXY_TARGET = "GLENDOVEER-13596 (n=583)"
 
 # Weather columns used as covariates
 _PAST_WEATHER_COLS = ["T_out", "RH_out"]
@@ -128,6 +130,15 @@ def feeder_merged_csv(tmp_path_factory):
     return _build_merged_csv(_FEEDER_CSV, _FEEDER_TARGET, tmpdir)
 
 
+@pytest.fixture(scope="module")
+def neighborhood_proxy_merged_csv(tmp_path_factory):
+    """Prepare the smallest available real circuit as a neighborhood proxy."""
+    tmpdir = tmp_path_factory.mktemp("neighborhood_proxy")
+    return _build_merged_csv(
+        _FEEDER_CSV, _NEIGHBORHOOD_PROXY_TARGET, tmpdir
+    )
+
+
 # ---------------------------------------------------------------------------
 # Column mappings
 # ---------------------------------------------------------------------------
@@ -156,6 +167,14 @@ def _feeder_mapping():
     return {
         "datetime": "Datetime",
         "target": _FEEDER_TARGET,
+        "past_covariates": _PAST_WEATHER_COLS,
+    }
+
+
+def _neighborhood_proxy_mapping():
+    return {
+        "datetime": "Datetime",
+        "target": _NEIGHBORHOOD_PROXY_TARGET,
         "past_covariates": _PAST_WEATHER_COLS,
     }
 
@@ -340,6 +359,51 @@ class TestFeederLevel:
         eval_result = evaluate_forecast_model(
             model_id=train_result["model_id"],
             csv_path=feeder_merged_csv,
+        )
+        assert eval_result["success"] is True, eval_result.get("error")
+        assert eval_result["test_metrics"]["rmse"] > 0
+
+
+# ===========================================================================
+# Neighborhood-scale proxy
+# ===========================================================================
+
+class TestNeighborhoodProxy:
+    """Default-suite coverage for the smallest available real AMI aggregate.
+
+    The source dataset does not contain a separately labelled neighborhood
+    total. The 583-customer circuit is therefore tested as an explicit proxy,
+    not represented as ground-truth neighborhood data.
+    """
+
+    async def test_inspect_train_and_evaluate(
+        self, neighborhood_proxy_merged_csv, ami_model_dir
+    ):
+        mapping = _neighborhood_proxy_mapping()
+        inspection = inspect_data(
+            csv_path=neighborhood_proxy_merged_csv,
+            column_mapping=mapping,
+        )
+        assert inspection["success"] is True, inspection.get("error")
+        assert inspection["ready_to_train"] is True
+        assert inspection["columns"]["target"] == _NEIGHBORHOOD_PROXY_TARGET
+
+        train_result = train_forecast_model(
+            csv_path=neighborhood_proxy_merged_csv,
+            model_type="LinearRegression",
+            lookback_hours=48,
+            horizon_hours=24,
+            frequency="h",
+            building_name="neighborhood_proxy",
+            column_mapping=mapping,
+        )
+        assert train_result["success"] is True, train_result.get("error")
+        assert train_result["training_info"]["lookback_steps"] == 48
+        assert train_result["training_info"]["horizon_steps"] == 24
+
+        eval_result = evaluate_forecast_model(
+            model_id=train_result["model_id"],
+            csv_path=neighborhood_proxy_merged_csv,
         )
         assert eval_result["success"] is True, eval_result.get("error")
         assert eval_result["test_metrics"]["rmse"] > 0

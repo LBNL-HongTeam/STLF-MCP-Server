@@ -750,3 +750,88 @@ class TestSeasonalSplit:
             assert train_season.index.max() < val_season.index.min(), (
                 f"Season '{season}': val rows overlap with or precede train rows"
             )
+
+
+class TestGapFreeChunkConversion:
+    """Tests for contiguous_chunks() / to_darts_series_chunks().
+
+    A seasonal split is non-contiguous by construction.  Feeding that frame
+    through ``to_darts_series`` reindexes it to a regular frequency and
+    interpolates straight-line values across the multi-week holes the split
+    just created.  ``to_darts_series_chunks`` splits at the gaps instead so
+    that no synthetic data is ever fabricated.
+    """
+
+    def test_contiguous_frame_is_one_chunk(self, full_year_csv):
+        loader = ForecastingDataLoader(csv_path=full_year_csv)
+        chunks = loader.contiguous_chunks()
+        assert len(chunks) == 1
+        assert len(chunks[0]) == len(loader.df)
+
+    def test_seasonal_split_frame_is_multi_chunk(self, full_year_csv):
+        loader = ForecastingDataLoader(csv_path=full_year_csv)
+        train, val = loader.split_train_val_seasonal(validation_split=0.2)
+        assert len(train.contiguous_chunks()) > 1
+        assert len(val.contiguous_chunks()) > 1
+
+    def test_chunks_preserve_every_row_and_add_none(self, full_year_csv):
+        """The regression this method exists for: zero synthetic rows."""
+        loader = ForecastingDataLoader(csv_path=full_year_csv)
+        train, val = loader.split_train_val_seasonal(validation_split=0.2)
+
+        train_series, _, _ = train.to_darts_series_chunks(fit_scalers=True)
+        for tgt in (val,):
+            tgt.target_scaler = train.target_scaler
+            tgt.covariate_scaler = train.covariate_scaler
+            tgt.future_covariate_scaler = train.future_covariate_scaler
+        val_series, _, _ = val.to_darts_series_chunks(fit_scalers=False)
+
+        assert sum(len(s) for s in train_series) == len(train.df)
+        assert sum(len(s) for s in val_series) == len(val.df)
+
+    def test_single_series_conversion_does_interpolate(self, full_year_csv):
+        """Documents the behaviour that motivates the chunked path."""
+        loader = ForecastingDataLoader(csv_path=full_year_csv)
+        train, _ = loader.split_train_val_seasonal(validation_split=0.2)
+        series, _, _ = train.to_darts_series(fit_scalers=True)
+        # The gap-filled single series is strictly longer than the real rows.
+        assert len(series) > len(train.df)
+
+    def test_chunks_are_internally_contiguous(self, full_year_csv):
+        loader = ForecastingDataLoader(csv_path=full_year_csv)
+        train, _ = loader.split_train_val_seasonal(validation_split=0.2)
+        for s in train.to_darts_series_chunks(fit_scalers=True)[0]:
+            deltas = pd.Series(s.time_index).diff().dropna().unique()
+            assert len(deltas) == 1, "chunk contains a time discontinuity"
+
+    def test_scaler_is_shared_across_chunks(self, full_year_csv):
+        """global_fit=True: one scaling applies to all chunks.
+
+        Per-series fitting (the Darts default for sequence input) would map
+        every season independently onto [0, 1] and destroy the between-season
+        level differences the model needs.
+        """
+        loader = ForecastingDataLoader(csv_path=full_year_csv)
+        train, _ = loader.split_train_val_seasonal(validation_split=0.2)
+        chunks = train.to_darts_series_chunks(fit_scalers=True)[0]
+        mins = [float(s.values().min()) for s in chunks]
+        maxs = [float(s.values().max()) for s in chunks]
+        # Exactly one chunk should touch each end of the global [0, 1] range.
+        assert min(mins) == pytest.approx(0.0, abs=1e-9)
+        assert max(maxs) == pytest.approx(1.0, abs=1e-9)
+        assert sum(m == pytest.approx(0.0, abs=1e-9) for m in mins) == 1
+        assert sum(m == pytest.approx(1.0, abs=1e-9) for m in maxs) == 1
+
+    def test_val_chunks_use_train_scaler(self, full_year_csv):
+        """Validation must not be rescaled to its own range."""
+        loader = ForecastingDataLoader(csv_path=full_year_csv)
+        train, val = loader.split_train_val_seasonal(validation_split=0.2)
+        train.to_darts_series_chunks(fit_scalers=True)
+        val.target_scaler = train.target_scaler
+        val_chunks = val.to_darts_series_chunks(fit_scalers=False)[0]
+        # Not forced onto [0, 1] — it inherits the training scale.
+        spans_unit_range = (
+            min(float(s.values().min()) for s in val_chunks) == pytest.approx(0.0, abs=1e-9)
+            and max(float(s.values().max()) for s in val_chunks) == pytest.approx(1.0, abs=1e-9)
+        )
+        assert not spans_unit_range

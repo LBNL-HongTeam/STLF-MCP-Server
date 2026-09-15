@@ -57,9 +57,16 @@ AMI_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "data", "examples", "AMI"
 )
 
-# City (district) level — with weather already merged
+# City (district) level — with weather already merged.
+# Both files are produced by figures/build_paper_datasets.py from a single
+# weather source, so the training year and the test year share one timestamp
+# convention.  Do NOT substitute 2023_city_level_with_weather.csv here: its
+# weather columns are shifted 7-8 h against its load column, which leaves the
+# model trained on aligned weather and tested on misaligned weather.  The
+# sanity bounds in this file are loose enough that the fault does not fail a
+# test, so it has to be avoided by construction.
 CITY_2021 = os.path.join(AMI_DIR, "2021_city_level_with_weather.csv")
-CITY_2023 = os.path.join(AMI_DIR, "2023_city_level_with_weather.csv")
+CITY_2023 = os.path.join(AMI_DIR, "2023_city_level_observed.csv")
 
 # Substation level (no weather; we use load only)
 SUBSTATION_2021 = os.path.join(AMI_DIR, "2021_substation_level.csv")
@@ -239,7 +246,9 @@ class TestPaperReplicationDistrictLevel:
             "winter PMAPE=%s | winter PTE=%s",
             mape,
             f"{pm.get('peak_mape', 'N/A'):.2f}%" if pm.get("peak_mape") else "N/A",
-            f"{pm.get('peak_timing_error_hours', 'N/A'):.2fh}" if pm.get("peak_timing_error_hours") else "N/A",
+            f"{pm['peak_timing_error_hours']:.2f}h"
+            if pm.get("peak_timing_error_hours") is not None
+            else "N/A",
         )
         logger.info("[PAPER REF] District XGBoost expected MAPE < 10%% (Fig. 5)")
 
@@ -888,7 +897,7 @@ class TestEnergyBurdenTracking:
 # ==============================================================================
 
 class TestHorizonCap:
-    """Verify that horizon_hours=96 is accepted (was previously capped at 48)."""
+    """Verify the public lookback and horizon bounds."""
 
     @pytest.fixture()
     def long_csv(self, tmp_path):
@@ -928,3 +937,48 @@ class TestHorizonCap:
         )
         assert not result["success"]
         assert "96" in result.get("error", "")
+
+    @pytest.mark.parametrize(
+        "lookback_hours,horizon_hours",
+        [(1, 1), (168, 1)],
+        ids=["minimum-window", "maximum-lookback"],
+    )
+    def test_window_boundaries_accepted(
+        self, long_csv, lookback_hours, horizon_hours
+    ):
+        result = train_forecast_model(
+            csv_path=long_csv,
+            model_type="LinearRegression",
+            lookback_hours=lookback_hours,
+            horizon_hours=horizon_hours,
+            frequency="h",
+        )
+
+        assert result["success"], result.get("error")
+        assert result["training_info"]["lookback_steps"] == lookback_hours
+        assert result["training_info"]["horizon_steps"] == horizon_hours
+
+    @pytest.mark.parametrize(
+        "parameter,value,error_fragment",
+        [
+            ("lookback_hours", 0, "between 1 and 168"),
+            ("lookback_hours", 169, "between 1 and 168"),
+            ("horizon_hours", 0, "between 1 and 96"),
+        ],
+    )
+    def test_window_boundaries_rejected(
+        self, long_csv, parameter, value, error_fragment
+    ):
+        kwargs = {
+            "csv_path": long_csv,
+            "model_type": "LinearRegression",
+            "lookback_hours": 24,
+            "horizon_hours": 6,
+            "frequency": "h",
+        }
+        kwargs[parameter] = value
+
+        result = train_forecast_model(**kwargs)
+
+        assert not result["success"]
+        assert error_fragment in result.get("error", "")
