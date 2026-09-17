@@ -3,7 +3,7 @@ name = "STLF_MCP"
 version = "0.1.0"
 description = "MCP server for building load forecasting with time-series models"
 readme = "README.md"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.11,<3.13"
 authors = [
     { name = "LBNL" }
 ]

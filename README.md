@@ -11,7 +11,8 @@ Built on [Darts](https://github.com/unit8co/darts) for the modelling and
 with Li et al. (2025), *Energy & Buildings* 344.
 
 > **Version**: 0.1.0
-> **Python**: 3.10–3.12 (3.13 is not supported — numba/llvmlite incompatibility)
+> **Python**: 3.11–3.12 (3.10 is not supported — numpy ≥ 2.3 requires 3.11;
+> 3.13 is not supported — numba/llvmlite incompatibility)
 
 ## 📑 Table of Contents
 
@@ -66,10 +67,13 @@ and forward forecasts — as MCP tools any client can call.
 
 **Prerequisites (all clients):**
 
-- Python 3.10–3.12 on your PATH
+- Python 3.11–3.12 on your PATH
 - The repository cloned locally and its dependencies installed
   (see [Development Setup](#development-setup))
 - `git` on your PATH
+- **macOS only**: the OpenMP runtime, `brew install libomp`. XGBoost links
+  against it and the server imports XGBoost at startup, so without it the
+  server fails to launch.
 
 Choose the appropriate setup for your AI assistant or IDE.
 
@@ -190,8 +194,9 @@ For contributors who want to modify or extend the MCP server.
 
 **Prerequisites:**
 
-- Python 3.10–3.12
+- Python 3.11–3.12
 - [uv package manager](https://github.com/astral-sh/uv)
+- **macOS only**: `brew install libomp` (OpenMP runtime required by XGBoost)
 
 ```bash
 # Clone and install
@@ -528,19 +533,22 @@ environment variables (copy `.env.example` → `.env` for local overrides):
 
 1. **"Module not found"**: Run `uv sync` (or `pip install -e ".[dev]"`) to
    install dependencies.
-2. **Python 3.13 errors on install**: Python 3.13 is not supported due to a
-   numba/llvmlite incompatibility. Use Python 3.10–3.12.
-3. **Process crashes (SIGSEGV) on macOS after mixing XGBoost and Torch models**:
+2. **Python 3.10 or 3.13 errors on install**: Python 3.10 is not supported
+   because the pinned numpy requires ≥ 3.11; Python 3.13 is not supported due
+   to a numba/llvmlite incompatibility. Use Python 3.11–3.12.
+3. **`XGBoost Library (libxgboost.dylib) could not be loaded` on macOS**: the
+   OpenMP runtime is missing. Run `brew install libomp` and relaunch.
+4. **Process crashes (SIGSEGV) on macOS after mixing XGBoost and Torch models**:
    an OpenMP duplicate-runtime conflict. `main.py` sets `KMP_DUPLICATE_LIB_OK=TRUE`
    and `OMP_NUM_THREADS=1` automatically, and `tests/conftest.py` applies the
    same pre-import guard for pytest. If you launch Python through another entry
    point, export both variables yourself before importing torch/xgboost.
-4. **LSTM/TFT wrong results or NaN losses on Apple Silicon (MPS)**: known
+5. **LSTM/TFT wrong results or NaN losses on Apple Silicon (MPS)**: known
    PyTorch MPS bugs. Workarounds — for LSTM set `dropout=0` or `n_rnn_layers=1`;
    for TFT pass `accelerator="cpu"` via `model_kwargs`.
-5. **TimesFM first run is slow / downloads data**: TimesFM 2.5 downloads ~800MB
+6. **TimesFM first run is slow / downloads data**: TimesFM 2.5 downloads ~800MB
    of pretrained weights from HuggingFace Hub on first use.
-6. **"Data frequency mismatch" during evaluation**: the CSV frequency differs
+7. **"Data frequency mismatch" during evaluation**: the CSV frequency differs
    from the model's training frequency. Provide a matching CSV or retrain.
 
 ## Contributing
