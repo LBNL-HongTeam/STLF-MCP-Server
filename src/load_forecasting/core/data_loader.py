@@ -62,8 +62,117 @@ _CALENDAR_COLS = [
 # cover the names produced by merge_covariates / fetch_weather_forecast and the
 # Open-Meteo bundle (T_out, RH_out, Direct_Radiation, Cloud_Cover, Rain, ...).
 DEFAULT_DATETIME_PATTERNS = ["datetime", "timestamp", "date", "time", "dt"]
-DEFAULT_TARGET_PATTERNS = ["kwh", "load", "power", "energy", "electricity", "demand"]
-DEFAULT_COVARIATE_PATTERNS = ["temp", "temperature", "t_out", "tout", "rh", "humidity", "solar", "radiation", "irradiance", "ghi", "dni", "dhi", "wind", "cloud", "rain", "precip", "dew", "sunshine"]
+DEFAULT_TARGET_PATTERNS = ["kwh", "kw", "mwh", "mw", "load", "power", "energy", "electricity", "demand", "consumption", "usage"]
+# A column whose name matches one of these is never chosen as the target even
+# if it also matches a target pattern: prior forecasts (load_forecast,
+# forecast_kwh) and generation (solar_kwh, pv_kw) are inputs, not the thing
+# to predict.  First-match-wins would otherwise pick them when they precede
+# the real load column.
+DEFAULT_TARGET_EXCLUDE_PATTERNS = ["forecast", "fcst", "pred", "solar", "pv", "generation"]
+DEFAULT_COVARIATE_PATTERNS = ["temp", "temperature", "t_out", "tout", "rh", "humidity", "wet_bulb", "wetbulb", "enthalpy", "solar", "radiation", "irradiance", "ghi", "dni", "dhi", "global_horizontal", "direct_normal", "diffuse_horizontal", "wind", "cloud", "rain", "precip", "snow", "dew", "sunshine", "pressure", "hdd", "cdd", "degree_day", "degree_hour", "occup", "headcount", "people"]
+
+# Name hints used by inspect_data to *suggest* roles it will not assign:
+# future covariates must be listed explicitly, and calendar flags the loader
+# already generates should not be duplicated.
+FUTURE_COVARIATE_HINT_PATTERNS = ["holiday", "schedule", "is_open", "operating", "event", "special_day", "forecast", "fcst", "pred"]
+REDUNDANT_CALENDAR_PATTERNS = ["is_weekend", "weekend", "workday", "business_day"]
+CATEGORICAL_CODE_PATTERNS = ["code"]
+
+
+def _parses_as_datetime(series: pd.Series, sample: int = 20) -> bool:
+    """True when a text column's leading values are timestamps (>= 90 %)."""
+    head = series.dropna().head(sample)
+    if head.empty:
+        return False
+    try:
+        parsed = pd.to_datetime(head, errors="coerce")
+    except Exception:
+        return False
+    return bool(parsed.notna().mean() >= 0.9)
+
+
+def auto_detect_columns(df: pd.DataFrame, patterns: Optional[dict] = None) -> dict:
+    """Infer datetime / target / past-covariate roles from column names and content.
+
+    Shared by ForecastingDataLoader and inspect_data so both agree.
+
+    Datetime: a name-matched *text* column that parses as timestamps wins;
+    otherwise the first text column that parses; otherwise a name-matched
+    numeric column (epoch-style).  Numeric flags such as ``Is_Daytime`` no
+    longer hijack the role just because they contain "time".
+
+    Target: the first numeric column whose name matches a target pattern and
+    none of the exclude patterns; otherwise the first numeric non-excluded
+    column; otherwise the first numeric column.
+
+    Past covariates: every remaining column whose name matches a covariate
+    pattern.  Future covariates are never auto-detected.
+    """
+    patterns = patterns or {}
+    dt_pats = patterns.get("datetime") or DEFAULT_DATETIME_PATTERNS
+    tgt_pats = patterns.get("target") or DEFAULT_TARGET_PATTERNS
+    cov_pats = patterns.get("past_covariates") or DEFAULT_COVARIATE_PATTERNS
+    excl_pats = patterns.get("target_exclude") or DEFAULT_TARGET_EXCLUDE_PATTERNS
+
+    def _name_hits(col: str, pats) -> bool:
+        c = str(col).lower()
+        return any(p in c for p in pats)
+
+    def _is_numeric(col: str) -> bool:
+        return bool(pd.api.types.is_numeric_dtype(df[col]))
+
+    resolved: dict = {}
+
+    # --- datetime ---
+    text_cols = [c for c in df.columns if not _is_numeric(c)]
+    for col in text_cols:
+        if _name_hits(col, dt_pats) and _parses_as_datetime(df[col]):
+            resolved["datetime"] = col
+            break
+    if "datetime" not in resolved:
+        for col in text_cols:
+            if _parses_as_datetime(df[col]):
+                resolved["datetime"] = col
+                logger.info("Auto-detected datetime column by content: %s", col)
+                break
+    if "datetime" not in resolved:
+        for col in df.columns:
+            if _name_hits(col, dt_pats) and pd.api.types.is_datetime64_any_dtype(df[col]):
+                resolved["datetime"] = col
+                break
+    if "datetime" not in resolved:
+        for col in df.columns:
+            if _name_hits(col, dt_pats) and _is_numeric(col):
+                resolved["datetime"] = col
+                logger.info("Auto-detected numeric (epoch-style) datetime column: %s", col)
+                break
+
+    # --- target ---
+    dt_col = resolved.get("datetime")
+    numeric = [c for c in df.columns if c != dt_col and _is_numeric(c)]
+    excluded = [c for c in numeric if _name_hits(c, excl_pats)]
+    for col in numeric:
+        if _name_hits(col, tgt_pats) and col not in excluded:
+            resolved["target"] = col
+            break
+    if "target" not in resolved:
+        for col in numeric:
+            if col not in excluded:
+                resolved["target"] = col
+                logger.info("Auto-detected target column (first numeric): %s", col)
+                break
+    if "target" not in resolved and numeric:
+        resolved["target"] = numeric[0]
+        logger.info("Auto-detected target column (first numeric, all excluded): %s", numeric[0])
+
+    # --- past covariates ---
+    taken = {resolved.get("datetime"), resolved.get("target")}
+    resolved["past_covariates"] = [
+        c for c in df.columns if c not in taken and _name_hits(c, cov_pats)
+    ]
+    resolved["future_covariates"] = []
+    resolved["target_excluded"] = [c for c in excluded if c != resolved.get("target")]
+    return resolved
 
 
 class DataLoadError(Exception):
@@ -228,6 +337,7 @@ class ForecastingDataLoader:
 
     def _resolve_mapping(self, mapping: Optional[dict]) -> dict:
         """Auto-detect columns if mapping not provided."""
+        self.target_excluded: list = []
         if mapping:
             # Ensure past_covariates and future_covariates keys always exist
             mapping = dict(mapping)
@@ -237,61 +347,16 @@ class ForecastingDataLoader:
                 mapping["future_covariates"] = []
             return mapping
 
-        patterns = get_auto_detect_patterns("train_forecast_model")
-
-        # Fallback patterns if spec is not loaded
-        if not patterns:
-            patterns = {
-                "datetime": DEFAULT_DATETIME_PATTERNS,
-                "target": DEFAULT_TARGET_PATTERNS,
-                "past_covariates": DEFAULT_COVARIATE_PATTERNS,
-            }
-
-        resolved: dict = {}
-
-        # --- Datetime column ---
-        for col in self.df.columns:
-            col_lower = col.lower()
-            if any(p in col_lower for p in patterns.get("datetime", [])):
-                resolved["datetime"] = col
-                break
-
-        if "datetime" not in resolved:
-            first_col = self.df.columns[0]
-            try:
-                pd.to_datetime(self.df[first_col].head(10))
-                resolved["datetime"] = first_col
-                logger.info("Auto-detected datetime column (positional fallback): %s", first_col)
-            except Exception:
-                pass
-
-        # --- Target column ---
-        for col in self.df.columns:
-            col_lower = col.lower()
-            if any(p in col_lower for p in patterns.get("target", [])):
-                resolved["target"] = col
-                break
-
-        if "target" not in resolved:
-            for col in self.df.columns:
-                if col != resolved.get("datetime") and pd.api.types.is_numeric_dtype(self.df[col]):
-                    resolved["target"] = col
-                    logger.info("Auto-detected target column (first numeric): %s", col)
-                    break
-
-        # --- Covariate columns ---
-        covariate_patterns = patterns.get("past_covariates", [])
-        resolved["past_covariates"] = [
-            col
-            for col in self.df.columns
-            if any(p in col.lower() for p in covariate_patterns)
-            and col not in [resolved.get("datetime"), resolved.get("target")]
-        ]
-
-        # Future covariates are never auto-detected — they must be explicitly
-        # listed by the caller because their semantics differ from past covariates.
-        resolved["future_covariates"] = []
-
+        # Patterns come from the spec (agent-facing documentation); the code
+        # constants are the fallback and a drift-guard test keeps them equal.
+        patterns = get_auto_detect_patterns("train_forecast_model") or {}
+        resolved = auto_detect_columns(self.df, patterns)
+        self.target_excluded = resolved.pop("target_excluded", [])
+        if self.target_excluded:
+            logger.info(
+                "Columns skipped as target candidates (forecast/generation names): %s",
+                self.target_excluded,
+            )
         logger.info("Resolved column mapping: %s", resolved)
         return resolved
 

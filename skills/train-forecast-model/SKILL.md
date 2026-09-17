@@ -469,7 +469,7 @@ If the user cares about holiday accuracy:
 2. Preprocessing holidays into a CSV is outside the MCP tool surface — offer two options:
    - User prepares an `is_holiday` (0/1) CSV covering both train and inference date ranges, then flows through the multi-CSV merge in §2.5.
    - Skip holiday features and accept larger errors on those days. If `peak_dates` in evaluation includes holidays, expect elevated PMAPE.
-3. If added, pass explicitly in `column_mapping.future_covariates=["is_holiday", ...]` (holiday calendars are known in advance). Auto-detect patterns will NOT pick up `is_holiday`.
+3. If added, pass explicitly in `column_mapping.future_covariates=["is_holiday", ...]` (holiday calendars are known in advance). Auto-detection never assigns future covariates; `inspect_data` lists such columns under `columns.future_covariate_candidates` and says so in `suggestions`, but you must pass them explicitly.
 4. For LSTM (ignores future covariates) or pure TimesFM (ignores all covariates), holiday flags will be silently ignored.
 
 ### 5d — Train path (`train_forecast_model`)

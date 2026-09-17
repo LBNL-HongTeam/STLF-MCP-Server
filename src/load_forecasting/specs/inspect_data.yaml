@@ -40,12 +40,13 @@ inputs:
       target:
         type: string
         description: Column containing load values to forecast
-        auto_detect_patterns: ["kwh", "load", "power", "energy", "electricity", "demand"]
+        auto_detect_patterns: ["kwh", "kw", "mwh", "mw", "load", "power", "energy", "electricity", "demand", "consumption", "usage"]
+        auto_detect_exclude_patterns: ["forecast", "fcst", "pred", "solar", "pv", "generation"]
       past_covariates:
         type: array
         items: { type: string }
         description: Optional weather/feature columns
-        auto_detect_patterns: ["temp", "temperature", "t_out", "tout", "rh", "humidity", "solar", "radiation", "irradiance", "ghi", "dni", "dhi", "wind", "cloud", "rain", "precip", "dew", "sunshine"]
+        auto_detect_patterns: ["temp", "temperature", "t_out", "tout", "rh", "humidity", "wet_bulb", "wetbulb", "enthalpy", "solar", "radiation", "irradiance", "ghi", "dni", "dhi", "global_horizontal", "direct_normal", "diffuse_horizontal", "wind", "cloud", "rain", "precip", "snow", "dew", "sunshine", "pressure", "hdd", "cdd", "degree_day", "degree_hour", "occup", "headcount", "people"]
 
   - name: frequency
     type: string
@@ -89,6 +90,25 @@ outputs:
         type: array
         items: { type: string }
         description: Columns not mapped to any role
+      future_covariate_candidates:
+        type: array
+        items: { type: string }
+        description: >
+          Unmapped columns whose names suggest values known ahead of time
+          (holiday, schedule, is_open, event, forecast). Never auto-assigned;
+          pass them in column_mapping.future_covariates.
+      redundant_calendar_columns:
+        type: array
+        items: { type: string }
+        description: Unmapped columns duplicating calendar flags the loader generates itself (is_weekend, workday)
+      categorical_code_columns:
+        type: array
+        items: { type: string }
+        description: Columns that look like nominal codes (name contains "code", e.g. weather_code); flagged CATEGORICAL_CODE
+      target_excluded:
+        type: array
+        items: { type: string }
+        description: Columns that matched a target name pattern but were skipped as target candidates (forecast / generation names)
       all_columns:
         type: array
         items: { type: string }

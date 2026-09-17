@@ -13,9 +13,10 @@ from ..core.data_loader import (
     ForecastingDataLoader,
     DataLoadError,
     _infer_frequency,
-    DEFAULT_DATETIME_PATTERNS,
-    DEFAULT_TARGET_PATTERNS,
-    DEFAULT_COVARIATE_PATTERNS,
+    auto_detect_columns,
+    FUTURE_COVARIATE_HINT_PATTERNS,
+    REDUNDANT_CALENDAR_PATTERNS,
+    CATEGORICAL_CODE_PATTERNS,
 )
 from ..core.frequency_utils import hours_to_steps, FREQ_TO_STEPS_PER_HOUR
 from ..core.paths import resolve_data_path, not_found_hint
@@ -122,13 +123,23 @@ def inspect_data(
             actual_frequency = detected_frequency or "unknown"
 
         mapped_set = {dt_col, target_col, *cov_cols, *fut_cov_cols}
+        unrecognised = [c for c in columns_in_file if c not in mapped_set]
+
+        def _hits(col: str, pats) -> bool:
+            return any(p in str(col).lower() for p in pats)
+
         column_report = {
             "datetime": dt_col,
             "target": target_col,
             "past_covariates": cov_cols,
             "future_covariates": fut_cov_cols,
-            "unrecognised": [c for c in columns_in_file if c not in mapped_set],
+            "unrecognised": unrecognised,
             "all_columns": columns_in_file,
+            # Roles auto-detection deliberately does not assign, surfaced as hints:
+            "future_covariate_candidates": [c for c in unrecognised if _hits(c, FUTURE_COVARIATE_HINT_PATTERNS)],
+            "redundant_calendar_columns": [c for c in unrecognised if _hits(c, REDUNDANT_CALENDAR_PATTERNS)],
+            "categorical_code_columns": [c for c in columns_in_file if c != dt_col and _hits(c, CATEGORICAL_CODE_PATTERNS)],
+            "target_excluded": list(getattr(loader, "target_excluded", []) or []),
         }
 
         # ------------------------------------------------------------------
@@ -398,6 +409,15 @@ def inspect_data(
         quality_flags: list[str] = []
         if loader_error:
             quality_flags.append(f"LOAD_ERROR: {loader_error}")
+        if column_report["categorical_code_columns"]:
+            mapped_codes = [c for c in column_report["categorical_code_columns"] if c in cov_cols]
+            quality_flags.append(
+                f"CATEGORICAL_CODE: {column_report['categorical_code_columns']} look like "
+                "nominal codes (e.g. WMO weather_code) — not meaningful as linear inputs. "
+                + (f"{mapped_codes} are currently mapped as covariates; exclude them via column_mapping "
+                   "or one-hot encode them externally." if mapped_codes else
+                   "Leave them unmapped or one-hot encode them externally.")
+            )
         if not freq_report["match"]:
             quality_flags.append(
                 f"FREQUENCY_MISMATCH: declared={frequency}, "
@@ -518,9 +538,36 @@ def inspect_data(
                 "temperature (column name containing 'temp' or 'temperature') "
                 "typically improves accuracy."
             )
-        if column_report["unrecognised"]:
+        if column_report["target_excluded"]:
             suggestions.append(
-                f"Columns {column_report['unrecognised']} were not mapped to "
+                f"Columns {column_report['target_excluded']} matched a target name pattern "
+                "but were skipped as target candidates because they look like prior "
+                f"forecasts or generation; the target is '{target_col}'. Pass "
+                "column_mapping explicitly if that is wrong."
+            )
+        if column_report["future_covariate_candidates"]:
+            suggestions.append(
+                f"Columns {column_report['future_covariate_candidates']} look like future "
+                "covariates (known ahead of time: holidays, schedules, prior forecasts). "
+                "Auto-detection never assigns future covariates — pass "
+                "column_mapping={'future_covariates': [...]} to use them. Note LSTM "
+                "ignores future covariates and TimesFM ignores all covariates."
+            )
+        if column_report["redundant_calendar_columns"]:
+            suggestions.append(
+                f"Columns {column_report['redundant_calendar_columns']} duplicate calendar "
+                "flags the loader generates automatically (cal_is_weekend); leaving them "
+                "unmapped is fine."
+            )
+        _explained = set(
+            column_report["future_covariate_candidates"]
+            + column_report["redundant_calendar_columns"]
+            + column_report["categorical_code_columns"]
+        )
+        _leftover = [c for c in column_report["unrecognised"] if c not in _explained]
+        if _leftover:
+            suggestions.append(
+                f"Columns {_leftover} were not mapped to "
                 "any role. If they contain useful signals, pass them explicitly "
                 "via column_mapping={'past_covariates': [...]}."
             )
@@ -697,17 +744,6 @@ def _sniff_columns(raw_df: pd.DataFrame, mapping: Optional[dict]) -> dict:
             result["future_covariates"] = []
         return result
 
-    dt_patterns = DEFAULT_DATETIME_PATTERNS
-    target_patterns = DEFAULT_TARGET_PATTERNS
-    cov_patterns = DEFAULT_COVARIATE_PATTERNS
-
-    result: dict = {"past_covariates": [], "future_covariates": []}
-    for col in raw_df.columns:
-        cl = col.lower()
-        if "datetime" not in result and any(p in cl for p in dt_patterns):
-            result["datetime"] = col
-        elif "target" not in result and any(p in cl for p in target_patterns):
-            result["target"] = col
-        elif any(p in cl for p in cov_patterns):
-            result["past_covariates"].append(col)
+    result = auto_detect_columns(raw_df)
+    result.pop("target_excluded", None)
     return result

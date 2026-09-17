@@ -51,13 +51,14 @@ inputs:
         type: string
         description: Column containing load values to forecast
         example: "Electricity_kWh"
-        auto_detect_patterns: ["kwh", "load", "power", "energy", "electricity", "demand"]
+        auto_detect_patterns: ["kwh", "kw", "mwh", "mw", "load", "power", "energy", "electricity", "demand", "consumption", "usage"]
+        auto_detect_exclude_patterns: ["forecast", "fcst", "pred", "solar", "pv", "generation"]
       past_covariates:
         type: array
         items: { type: string }
         description: Optional weather/feature columns known only for past timesteps
         example: ["T_out", "RH_out"]
-        auto_detect_patterns: ["temp", "temperature", "t_out", "tout", "rh", "humidity", "solar", "radiation", "irradiance", "ghi", "dni", "dhi", "wind", "cloud", "rain", "precip", "dew", "sunshine"]
+        auto_detect_patterns: ["temp", "temperature", "t_out", "tout", "rh", "humidity", "wet_bulb", "wetbulb", "enthalpy", "solar", "radiation", "irradiance", "ghi", "dni", "dhi", "global_horizontal", "direct_normal", "diffuse_horizontal", "wind", "cloud", "rain", "precip", "snow", "dew", "sunshine", "pressure", "hdd", "cdd", "degree_day", "degree_hour", "occup", "headcount", "people"]
       future_covariates:
         type: array
         items: { type: string }

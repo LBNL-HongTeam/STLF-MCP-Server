@@ -22,6 +22,7 @@ from load_forecasting.core.spec_loader import get_all_specs, load_spec, validate
 from load_forecasting.core.data_loader import (
     DEFAULT_DATETIME_PATTERNS,
     DEFAULT_TARGET_PATTERNS,
+    DEFAULT_TARGET_EXCLUDE_PATTERNS,
     DEFAULT_COVARIATE_PATTERNS,
 )
 
@@ -107,4 +108,5 @@ def test_auto_detect_patterns_match_code(spec_name):
     props = next(i for i in spec["inputs"] if i["name"] == "column_mapping")["properties"]
     assert props["datetime"]["auto_detect_patterns"] == DEFAULT_DATETIME_PATTERNS
     assert props["target"]["auto_detect_patterns"] == DEFAULT_TARGET_PATTERNS
+    assert props["target"]["auto_detect_exclude_patterns"] == DEFAULT_TARGET_EXCLUDE_PATTERNS
     assert props["past_covariates"]["auto_detect_patterns"] == DEFAULT_COVARIATE_PATTERNS

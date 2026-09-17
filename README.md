@@ -524,6 +524,27 @@ See `AGENTS.md` for architecture internals and non-obvious gotchas (covariate
 handling, hours-vs-steps conversion, MPS/OpenMP caveats, spec/registry
 resolution).
 
+## Column Auto-Detection
+
+When `column_mapping` is omitted, every CSV-reading tool infers roles from
+column names (case-insensitive substrings) and content. The canonical lists
+live in `src/load_forecasting/specs/train_forecast_model.yaml`
+(`auto_detect_patterns`) and are mirrored by constants in
+`core/data_loader.py`; a test keeps the two identical.
+
+| Role | Rule |
+|---|---|
+| **datetime** | A text column whose name contains `datetime`/`timestamp`/`date`/`time`/`dt` *and* whose values parse as timestamps; else the first text column that parses; else a numeric epoch-style column with a matching name. A numeric flag such as `Is_Daytime` never wins on name alone. |
+| **target** | First numeric column matching `kwh`, `kw`, `mwh`, `mw`, `load`, `power`, `energy`, `electricity`, `demand`, `consumption`, `usage` — **skipping** names that contain `forecast`, `fcst`, `pred`, `solar`, `pv`, `generation` (prior forecasts and generation are inputs, not the thing to predict). Falls back to the first numeric column. |
+| **past covariates** | Every remaining column matching a weather / occupancy name: temperature (`temp`, `t_out`, `wet_bulb`, `enthalpy`, `dew`), humidity (`rh`, `humidity`), radiation (`solar`, `radiation`, `irradiance`, `ghi`/`dni`/`dhi`, `global_horizontal`, `direct_normal`, `diffuse_horizontal`, `sunshine`), sky/precipitation (`cloud`, `rain`, `precip`, `snow`), `wind`, `pressure`, degree-days (`hdd`, `cdd`, `degree_day`, `degree_hour`), occupancy (`occup`, `headcount`, `people`). |
+| **future covariates** | Never auto-assigned. `inspect_data` reports likely candidates (`holiday`, `schedule`, `is_open`, `event`, `forecast`…) under `columns.future_covariate_candidates`; pass them in `column_mapping.future_covariates`. |
+
+`inspect_data` also flags nominal codes (`weather_code` → `CATEGORICAL_CODE`),
+notes calendar columns the loader already generates (`is_weekend`), and lists
+columns it skipped as target candidates. `generate_data_report` draws every
+numeric column and tags the ones auto-detection did not map, so a missed
+column is visible rather than silently ignored.
+
 ## Agent Skills
 
 The top-level `skills/` directory contains instruction bundles for AI agents in
