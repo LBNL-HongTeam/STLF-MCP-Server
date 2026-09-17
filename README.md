@@ -1,6 +1,6 @@
 # STLF-MCP-Server
 
-A Model Context Protocol (MCP) server that provides **18 tools** for
+A Model Context Protocol (MCP) server that provides **19 tools** for
 **short-term load forecasting (STLF)** of building and grid electrical demand.
 This server enables AI assistants and other MCP clients to inspect data, merge
 weather, train, tune, evaluate, backtest, and forecast electrical loads — and
@@ -247,7 +247,7 @@ replacing the stdio command stanza with an HTTP one:
 
 ## Available Tools
 
-The server provides **18 tools** organized into **6 categories**. Full parameter
+The server provides **19 tools** organized into **6 categories**. Full parameter
 and return-shape documentation lives in each tool's function signature (FastMCP
 derives the JSON schema from it) and in the YAML specs under
 `src/load_forecasting/specs/`.
@@ -287,8 +287,15 @@ derives the JSON schema from it) and in the YAML specs under
 - `batch_generate_forecast` - Generate forward forecasts for many trained models
   in one call
 
-### 📊 Reporting (3 tools)
+### 📊 Reporting (4 tools)
 
+- `generate_data_report` - Self-contained HTML *data* report, before any
+  training: target and every covariate over time with the train/validation
+  split drawn as coloured segments (sequential or per-season) and season
+  bands, a split timeline, hour-of-day profiles by season and
+  weekday/weekend, day-of-week and monthly profiles, a day × hour heatmap,
+  target-vs-covariate relationships, gaps and outliers. `output_html_path`
+  is optional (defaults under `outputs/reports/`)
 - `generate_evaluation_report` - Self-contained interactive HTML evaluation
   report
 - `generate_backtest_report` - Self-contained HTML backtest report with a
@@ -319,7 +326,9 @@ derives the JSON schema from it) and in the YAML specs under
    ```
 
    Each record's `path` is absolute and can be passed straight to the tools
-   below. Included samples: a 3-month 15-minute building load with outdoor
+   below. To *see* a dataset — series, covariates, the train/validation split,
+   load profiles, heatmap — call `generate_data_report` with just the
+   `csv_path`; it returns the path of a self-contained HTML page. Included samples: a 3-month 15-minute building load with outdoor
    temperature (`sample_building_load.csv`) and hourly 2021/2023 AMI
    aggregates at city, substation and feeder level with matching Open-Meteo
    weather (`AMI/`).
@@ -483,7 +492,7 @@ The server follows a layered architecture:
 ┌─────────────────────────┐
 │   MCP Protocol Layer    │  FastMCP server handling client communications
 ├─────────────────────────┤
-│      Tools Layer        │  18 tools organized into 6 categories
+│      Tools Layer        │  19 tools organized into 6 categories
 ├─────────────────────────┤
 │       Core Layer        │  Data loader, trainer, evaluator, model registry,
 │                         │  tuning (Optuna), weather fetcher, spec loader
@@ -557,6 +566,7 @@ environment variables (copy `.env.example` → `.env` for local overrides):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LOAD_FORECASTING_MODEL_DIR` | `./models` | Model storage directory. |
+| `LOAD_FORECASTING_OUTPUT_DIR` | *(unset)* | Where tools write artifacts when no output path is given (currently `generate_data_report`). Falls back to `<repo>/outputs`. |
 | `LOAD_FORECASTING_DATA_DIR` | *(unset)* | Directory `list_datasets` scans by default, and an extra root for relative `csv_path` values. Falls back to the bundled `data/examples`. |
 | `MCP_TRANSPORT` | `stdio` | Transport mode (`stdio` or `http`). |
 | `MCP_HTTP_PORT` | `8003` | HTTP port. |

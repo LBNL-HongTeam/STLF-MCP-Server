@@ -226,6 +226,21 @@ def _prepare_training_series(
         "interpolated_train_steps": _n_steps(train_series) - len(train_loader.df),
         "interpolated_validation_steps": _n_steps(val_series) - len(val_loader.df),
     }
+    # Date-labelled segments: what generate_data_report draws, recorded here
+    # so metadata.json says exactly which dates trained and which validated.
+    try:
+        from ..core.splits import describe_split, step_for_frequency, summarize_segments
+
+        segments = describe_split(
+            train_loader.df.index,
+            val_loader.df.index,
+            step_for_frequency(getattr(loader, "inferred_frequency", None) or loader.frequency),
+            label_seasons=(split_strategy == "seasonal_chunked"),
+        )
+        split_info["segments"] = segments
+        split_info["segment_summary"] = summarize_segments(segments)
+    except Exception as e:  # never let bookkeeping break training
+        logger.warning("Could not describe split segments: %s", e)
 
     return {
         "train_loader": train_loader,

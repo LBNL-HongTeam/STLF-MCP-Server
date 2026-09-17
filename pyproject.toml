@@ -75,6 +75,8 @@ packages = ["src/load_forecasting"]
 "skills"                                                    = "load_forecasting/skills"
 # HTML report assets (Jinja template, CSS, vendored JS)
 "src/load_forecasting/reporting/template.html"              = "load_forecasting/reporting/template.html"
+"src/load_forecasting/reporting/data_template.html"         = "load_forecasting/reporting/data_template.html"
+"src/load_forecasting/reporting/data_charts.js"             = "load_forecasting/reporting/data_charts.js"
 "src/load_forecasting/reporting/styles.css"                 = "load_forecasting/reporting/styles.css"
 "src/load_forecasting/reporting/charts.js"                  = "load_forecasting/reporting/charts.js"
 "src/load_forecasting/reporting/assets/d3.min.js"           = "load_forecasting/reporting/assets/d3.min.js"

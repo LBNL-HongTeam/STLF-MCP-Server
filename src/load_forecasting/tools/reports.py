@@ -631,3 +631,143 @@ def generate_inference_dashboard(
     except Exception as e:
         logger.exception("generate_inference_dashboard failed")
         return create_error_response(f"Inference dashboard generation failed: {str(e)}")
+
+
+def generate_data_report(
+    csv_path: str,
+    output_html_path: Optional[str] = None,
+    column_mapping: Optional[dict] = None,
+    frequency: Optional[str] = None,
+    split_strategy: str = "seasonal",
+    validation_split: float = 0.2,
+    covariates: Optional[list] = None,
+    title: Optional[str] = None,
+    max_points: int = 60000,
+) -> dict:
+    """
+    Generate a self-contained HTML report that visualises a load CSV before
+    training: the target and every covariate over time, the train/validation
+    split the trainer would use, load profiles, a day x hour heatmap,
+    covariate-vs-load relationships, and data-quality findings.
+
+    Use this when the user wants to *see* the data (rather than the numeric
+    inspect_data summary), to check a seasonal split, to compare covariates,
+    or to judge whether flagged outliers are real events. The page bundles
+    every dependency inline and opens from file:// with no network.
+
+    Args:
+        csv_path: Path to the CSV (absolute, or relative to the data roots).
+        output_html_path: Where to write the .html report. Optional: when
+            omitted the report is written as <csv stem>_data_report.html
+            under LOAD_FORECASTING_OUTPUT_DIR (if set) or <repo>/outputs/reports,
+            and the path is returned. Give an absolute path to control it.
+        column_mapping: Optional explicit roles (datetime, target,
+            past_covariates, future_covariates). Auto-detected if omitted;
+            numeric columns the mapping does not recognise are still plotted
+            and labelled "unmapped".
+        frequency: Data frequency ('15min', '30min', 'h'); inferred if omitted.
+        split_strategy: How to draw the split: "seasonal" (per meteorological
+            season, as train_forecast_model uses for deep models; falls back
+            to sequential when fewer than four seasons are present),
+            "sequential" (last fraction by time), or "none".
+        validation_split: Fraction held out (per season for "seasonal").
+        covariates: Subset of columns to draw as covariate panels. Default:
+            every numeric column except the target.
+        title: Report title.
+        max_points: Overview series longer than this are stride-downsampled
+            for the browser; all statistics still use the full data.
+
+    Returns:
+        Dict with output_html_path, file_size_bytes, n_rows, frequency,
+        target, covariates (with roles), split (strategy + segments),
+        counts of gaps/outliers, and the inspect_data readiness verdict.
+    """
+    try:
+        from ..reporting import (
+            build_data_report_payload,
+            build_data_report_html,
+            SPLIT_STRATEGIES,
+        )
+        from .inspection import inspect_data
+
+        if split_strategy not in SPLIT_STRATEGIES:
+            return create_error_response(
+                f"split_strategy must be one of {list(SPLIT_STRATEGIES)}, got {split_strategy!r}"
+            )
+        if not 0.05 <= float(validation_split) <= 0.5:
+            return create_error_response("validation_split must be between 0.05 and 0.5")
+        if not output_html_path:
+            from ..core.paths import default_output_dir, resolve_data_path
+            stem = resolve_data_path(csv_path).stem or "data"
+            output_html_path = str(default_output_dir() / "reports" / f"{stem}_data_report.html")
+        err = _validate_html_output_path(output_html_path)
+        if err:
+            return create_error_response(err)
+        out_path = Path(output_html_path)
+
+        # Numeric profile first: it also resolves the frequency and mapping.
+        inspection = inspect_data(csv_path, column_mapping=column_mapping, frequency=frequency)
+        if not inspection.get("success"):
+            return create_error_response(f"inspect_data failed: {inspection.get('error')}")
+        resolved_frequency = frequency or (inspection.get("frequency") or {}).get("inferred") or "h"
+
+        try:
+            loader = ForecastingDataLoader(
+                csv_path=csv_path,
+                column_mapping=column_mapping,
+                frequency=resolved_frequency,
+                add_calendar_features=False,
+                lag_hours=[],
+            )
+        except DataLoadError as e:
+            return create_error_response(str(e))
+
+        payload = build_data_report_payload(
+            loader,
+            csv_path=str(loader.csv_path),
+            covariates=covariates,
+            split_strategy=split_strategy,
+            validation_split=float(validation_split),
+            title=title,
+            max_points=int(max_points),
+            inspection=inspection,
+        )
+        html = build_data_report_html(payload)
+        out_path.write_text(html, encoding="utf-8")
+
+        return create_success_response(
+            output_html_path=str(out_path.resolve()),
+            file_size_bytes=int(out_path.stat().st_size),
+            csv_path=payload.meta["csv_path"],
+            n_rows=payload.meta["n_rows"],
+            frequency=payload.meta["frequency"],
+            time_range={"start": payload.meta["start"], "end": payload.meta["end"], "days": payload.meta["days"]},
+            target=payload.meta["target"],
+            covariates=payload.meta["covariates"],
+            unmapped_covariates=payload.meta["unmapped_covariates"],
+            split={
+                "requested": payload.split["requested"],
+                "strategy": payload.split["strategy"],
+                "validation_split": payload.split["validation_split"],
+                "summary": payload.split["summary"],
+                "segments": payload.split["segments"],
+                "note": payload.split["note"],
+            },
+            peak_windows=payload.windows,
+            n_gaps=len(payload.gaps),
+            n_value_outliers=len(payload.outliers.get("value", [])),
+            n_step_changes=len(payload.outliers.get("spikes", [])),
+            quality_flags=inspection.get("quality_flags", []),
+            ready_to_train=inspection.get("ready_to_train"),
+            blocking_issues=inspection.get("blocking_issues", []),
+            sections=[
+                "summary", "time series (with window buttons)", "train/validation split",
+                "covariates", "load profiles", "day x hour heatmap",
+                "covariate relationships", "data quality",
+            ],
+        )
+    except ValueError as e:
+        return create_error_response(str(e))
+    except Exception as e:
+        logger.exception("generate_data_report failed")
+        return create_error_response(f"Data report generation failed: {e}")

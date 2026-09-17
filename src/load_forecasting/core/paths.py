@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Optional
 
 ENV_DATA_DIR = "LOAD_FORECASTING_DATA_DIR"
+ENV_OUTPUT_DIR = "LOAD_FORECASTING_OUTPUT_DIR"
 
 # Depth from this file to the repository root:
 #   core/paths.py -> core -> load_forecasting -> src -> <repo>
@@ -118,6 +119,22 @@ def resolve_data_path(path) -> Path:
         if candidate.exists():
             return candidate.resolve()
     return p
+
+
+def default_output_dir() -> Path:
+    """Where tools write artifacts when the caller gives no output path.
+
+    ``LOAD_FORECASTING_OUTPUT_DIR`` if set; else ``<repo>/outputs`` in a source
+    checkout; else ``./outputs`` under the process working directory.  The
+    directory is created on demand by the caller.
+    """
+    value = os.getenv(ENV_OUTPUT_DIR)
+    if value:
+        return Path(value).expanduser()
+    root = repo_root()
+    if root is not None:
+        return root / "outputs"
+    return Path.cwd() / "outputs"
 
 
 def not_found_hint(path) -> str:

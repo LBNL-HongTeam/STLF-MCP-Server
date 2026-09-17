@@ -1,0 +1,214 @@
+# Generate Data Report Specification
+# For AlphaBuilding-Agents SpecRegistry and AI discovery
+
+id: forecasting.generate_data_report
+version: "1.0.0"
+mcp_server: load_forecasting
+mcp_tool: generate_data_report
+
+category: reporting
+tags: [visualization, data_quality, eda, train_validation_split, seasonal_split, covariates, html_report]
+description: >
+  Generate a self-contained HTML report that visualises a load CSV before
+  training. Shows the target and every covariate over time with the
+  train/validation split the trainer would use (sequential or per-season),
+  season bands, gaps and outliers; a split timeline; hour-of-day profiles by
+  season and weekday/weekend; day-of-week and monthly profiles; a day x hour
+  heatmap; target-vs-covariate relationships (binned mean + scatter); and the
+  inspect_data quality findings. Use when the user wants to see the data,
+  check a seasonal split, compare covariates, or judge flagged outliers.
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+inputs:
+  - name: csv_path
+    type: string
+    required: true
+    delivery_mode: file_reference
+    description: Path to the CSV (absolute, or relative to the server's data roots)
+    example: "/data/examples/AMI/_merged_LENTS_HAPPY_VALLEY.csv"
+
+  - name: output_html_path
+    type: string
+    required: false
+    description: >
+      Where to write the report. Optional -- when omitted the server writes
+      <csv basename>_data_report.html under LOAD_FORECASTING_OUTPUT_DIR/reports
+      (if set) or <repo>/outputs/reports, and returns the path. Absolute paths are
+      recommended when given; relative paths resolve against the server's
+      working directory, not the client's.
+    example: "/tmp/reports/lents_2021_data_report.html"
+
+  - name: column_mapping
+    type: object
+    required: false
+    description: >
+      Explicit column roles (datetime, target, past_covariates,
+      future_covariates). Auto-detected if omitted. Numeric columns the
+      mapping does not recognise are still plotted and tagged "unmapped".
+
+  - name: frequency
+    type: string
+    required: false
+    enum: ["15min", "30min", "h"]
+    description: Data frequency; inferred from the timestamps if omitted
+
+  - name: split_strategy
+    type: string
+    required: false
+    default: "seasonal"
+    enum: ["seasonal", "sequential", "none"]
+    description: >
+      How to draw the train/validation split. "seasonal" mirrors
+      train_forecast_model for deep models (each meteorological season's last
+      fraction validates; falls back to sequential with fewer than four
+      seasons). "sequential" holds out the last fraction by time.
+
+  - name: validation_split
+    type: number
+    required: false
+    default: 0.2
+    minimum: 0.05
+    maximum: 0.5
+    description: Fraction held out for validation (per season for "seasonal")
+
+  - name: covariates
+    type: array
+    items: { type: string }
+    required: false
+    description: >
+      Subset of columns to draw as covariate panels. Default is every numeric
+      column except the target.
+
+  - name: title
+    type: string
+    required: false
+    description: Report title
+
+  - name: max_points
+    type: integer
+    required: false
+    default: 60000
+    description: >
+      Overview series longer than this are stride-downsampled for the
+      browser; statistics always use the full data.
+
+# ==============================================================================
+# OUTPUTS
+# ==============================================================================
+outputs:
+  success:
+    type: boolean
+
+  error:
+    type: string
+
+  output_html_path:
+    type: string
+    description: Absolute path of the written report
+
+  file_size_bytes:
+    type: integer
+
+  csv_path:
+    type: string
+    description: Absolute path of the CSV that was read
+
+  n_rows: { type: integer }
+  frequency: { type: string }
+
+  time_range:
+    type: object
+    properties:
+      start: { type: string, format: datetime }
+      end: { type: string, format: datetime }
+      days: { type: number }
+
+  target: { type: string }
+
+  covariates:
+    type: array
+    description: Each numeric non-target column with its mapping role and Pearson r against the target
+    items:
+      type: object
+      properties:
+        name: { type: string }
+        role: { type: string, enum: ["past_covariate", "future_covariate", "unmapped"] }
+        pearson_r: { type: number }
+        mean: { type: number }
+        n_missing: { type: integer }
+
+  unmapped_covariates:
+    type: array
+    items: { type: string }
+    description: >
+      Numeric columns the column mapping did not recognise; a model trained
+      without an explicit mapping ignores them.
+
+  split:
+    type: object
+    description: >
+      The split as drawn, as date segments (same computation
+      train_forecast_model records).
+    properties:
+      requested: { type: string }
+      strategy: { type: string, description: "Effective strategy after any fallback" }
+      validation_split: { type: number }
+      summary:
+        type: object
+        properties:
+          n_segments: { type: integer }
+          training_rows: { type: integer }
+          validation_rows: { type: integer }
+          validation_fraction: { type: number }
+          by_season: { type: object }
+      segments:
+        type: array
+        items:
+          type: object
+          properties:
+            role: { type: string, enum: ["training", "validation"] }
+            season: { type: string }
+            start: { type: string, format: datetime }
+            end: { type: string, format: datetime }
+            n_rows: { type: integer }
+      note: { type: string }
+
+  peak_windows:
+    type: array
+    description: One zoom window per season, centred on that season's peak load
+    items:
+      type: object
+      properties:
+        label: { type: string }
+        season: { type: string }
+        peak_time: { type: string, format: datetime }
+        peak_value: { type: number }
+        start: { type: string, format: datetime }
+        end: { type: string, format: datetime }
+
+  n_gaps: { type: integer }
+  n_value_outliers: { type: integer }
+  n_step_changes: { type: integer }
+  quality_flags:
+    type: array
+    items: { type: string }
+  ready_to_train: { type: boolean }
+  blocking_issues:
+    type: array
+    items: { type: string }
+  sections:
+    type: array
+    items: { type: string }
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+notes:
+  - "Read-only on the CSV; writes exactly one HTML file. Every JS/CSS dependency and the data are inlined, so it opens from file:// with no network"
+  - "Runs inspect_data internally; outlier and step-change counts use identical rules, so the picture and the numeric report agree"
+  - "The split is computed by the same loader methods train_forecast_model uses, and the segments match data_info.split.segments recorded at training time"
+  - "In the seasonal split, winter = Dec + Jan + Feb: for a calendar-year file January-February is entirely training and winter's validation block falls in late December. The split timeline makes this visible"
+  - "Window buttons in the page switch the time-series panels between the full range, each season, and each season's peak week"
+  - "Training or tuning is not started; follow with train_forecast_model once the data looks right"

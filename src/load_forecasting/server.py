@@ -10,7 +10,7 @@ from pathlib import Path
 from fastmcp import FastMCP
 
 from .core.spec_loader import get_all_specs
-from .core.paths import ENV_DATA_DIR, default_dataset_dir
+from .core.paths import ENV_DATA_DIR, ENV_OUTPUT_DIR, default_dataset_dir, default_output_dir
 from .core import skill_loader
 from .tools import (
     train_forecast_model,
@@ -28,6 +28,7 @@ from .tools import (
     merge_covariates,
     fetch_weather_forecast,
     generate_inference_dashboard,
+    generate_data_report,
     batch_train_forecast_models,
     batch_generate_forecast,
 )
@@ -79,6 +80,12 @@ def _build_instructions() -> str:
         f"Trained models are stored under {model_dir}. list_models reports the "
         "csv_path, target_column and frequency each model was trained on."
     )
+    lines.append(
+        f"To visualise a dataset (time series with train/validation split, covariates, "
+        "load profiles, heatmap, covariate relationships) call generate_data_report; "
+        f"output_html_path is optional and defaults to {default_output_dir() / 'reports'} "
+        f"({ENV_OUTPUT_DIR} overrides). Tell the user the returned path so they can open it."
+    )
     skills = skill_loader.list_skills()
     if skills:
         names = ", ".join(s["name"] for s in skills)
@@ -111,6 +118,7 @@ mcp.add_tool(generate_backtest_report)
 mcp.add_tool(merge_covariates)
 mcp.add_tool(fetch_weather_forecast)
 mcp.add_tool(generate_inference_dashboard)
+mcp.add_tool(generate_data_report)
 mcp.add_tool(batch_train_forecast_models)
 mcp.add_tool(batch_generate_forecast)
 

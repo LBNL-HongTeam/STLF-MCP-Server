@@ -226,3 +226,6 @@ __marimo__/
 /opencode.json
 /.opencode/
 .opencode
+
+# Generated reports and other tool artifacts
+outputs/

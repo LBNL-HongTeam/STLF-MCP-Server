@@ -59,7 +59,7 @@ Skip this section if two or more CSVs were provided — go directly to §2.5.
 
 **Precondition:** the §1.0 timezone-first gate must already be satisfied — the user must have explicitly stated the file's timezone (naive vs tz-aware). If they have not, STOP and ask before running `inspect_data`. Never guess it from the data.
 
-Run `inspect_data` on the CSV before any training call, even though it is auto-invoked inside `train_forecast_model`. Rationale:
+Run `inspect_data` on the CSV before any training call, even though it is auto-invoked inside `train_forecast_model`. If the user wants to *see* the data, or a quality flag needs judgement (are those outliers real events or bad data?), also call `generate_data_report` and give the user the returned HTML path; it draws the same split the trainer will use, so a seasonal-split question is answered by its split timeline. Rationale:
 
 - Catches blocking issues (`LOAD_ERROR`, `UNSUPPORTED_FREQUENCY`) before wasting a training run.
 - Confirms the auto-detected column mapping (datetime, target, past covariates).
@@ -624,6 +624,7 @@ Before declaring the task complete, verify every item:
 | Tool | Purpose | Required args | Notable optional args | Key return keys |
 |---|---|---|---|---|
 | `list_datasets` | Enumerate available CSV/Parquet files with absolute paths | — | `directory`, `recursive`, `include_stats`, `limit` | `datasets[].path`, `rows`, `columns`, `frequency`, `start`/`end` |
+| `generate_data_report` | Visual EDA: series + covariates with the train/validation split (seasonal or sequential), season bands, gaps/outliers, load profiles, day×hour heatmap, covariate relationships | `csv_path` | `output_html_path` (optional), `split_strategy`, `validation_split`, `covariates`, `column_mapping` | `output_html_path`, `split.segments`, `unmapped_covariates`, `ready_to_train` |
 | `inspect_data` | EDA + validation pre-flight | `csv_path` | `column_mapping`, `frequency` | `ready_to_train`, `blocking_issues`, `quality_flags`, `columns`, `time_range`, `frequency` |
 | `merge_covariates` | Pairwise LEFT-JOIN load + covariate CSV | `load_csv_path`, `covariate_csv_path`, `output_csv_path` | `load_datetime_col`, `covariate_datetime_col`, `covariate_columns`, `covariate_timezone`, `load_timezone` | `n_rows`, `covariate_columns`, `n_missing_filled`, `dst_duplicates_dropped`, `timezone_conversion` |
 | `fetch_weather_forecast` | Pull Open-Meteo weather | `latitude`, `longitude` | `forecast_hours`, `past_hours`, `timezone`, `variables`/`preset`, `resolution` | weather rows + optional CSV write |
