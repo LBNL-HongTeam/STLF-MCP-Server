@@ -177,6 +177,9 @@ def test_train_tool_accepts_cpu_device(monkeypatch, tmp_path):
     import numpy as np
     import pandas as pd
 
+    # Keep the trained model out of the developer's real registry.
+    monkeypatch.setenv("LOAD_FORECASTING_MODEL_DIR", str(tmp_path / "models"))
+
     n = 400
     t = pd.date_range("2023-01-01", periods=n, freq="h")
     df = pd.DataFrame({
