@@ -24,6 +24,7 @@ from darts import TimeSeries
 from darts.dataprocessing.transformers import MissingValuesFiller, Scaler
 
 from .spec_loader import get_auto_detect_patterns
+from .paths import resolve_data_path, not_found_hint
 from .frequency_utils import  hours_to_steps
 
 logger = logging.getLogger(__name__)
@@ -130,7 +131,9 @@ class ForecastingDataLoader:
             DataLoadError: If the file is not found, cannot be parsed,
                 or fails any validation check.
         """
-        self.csv_path = Path(csv_path)
+        # Resolve relative paths against the data roots (cwd, LOAD_FORECASTING_DATA_DIR,
+        # repo root, bundled examples) so the server's working directory does not matter.
+        self.csv_path = resolve_data_path(csv_path)
         self.frequency = frequency
         self.missing_value_strategy = missing_value_strategy
         self.max_gap = pd.Timedelta(max_gap)
@@ -147,14 +150,15 @@ class ForecastingDataLoader:
             if not self.csv_path.exists():
                 raise DataLoadError(
                     f"CSV file not found: {csv_path}\n"
-                    "Check that the path is correct and the file is accessible."
+                    "Check that the path is correct and the file is accessible. "
+                    + not_found_hint(csv_path)
                 )
 
             # ------------------------------------------------------------------
             # Read CSV
             # ------------------------------------------------------------------
             try:
-                self.df = pd.read_csv(csv_path)
+                self.df = pd.read_csv(self.csv_path)
             except Exception as e:
                 raise DataLoadError(
                     f"Failed to read CSV '{csv_path}': {e}\n"
@@ -744,6 +748,7 @@ class ForecastingDataLoader:
         series = self.df[target_col]
 
         return {
+            "csv_path": str(self.csv_path),
             "total_samples": len(self.df),
             "start_date": self.df.index.min().isoformat(),
             "end_date": self.df.index.max().isoformat(),

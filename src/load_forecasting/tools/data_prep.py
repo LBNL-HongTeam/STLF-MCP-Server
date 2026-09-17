@@ -12,6 +12,7 @@ import logging
 import pandas as pd
 
 from ..core.model_registry import ModelRegistry
+from ..core.paths import resolve_data_path, not_found_hint
 from ..core.weather_fetcher import (
     fetch_weather_forecast_df,
     VARIABLE_PRESETS as _WEATHER_PRESETS,
@@ -114,19 +115,23 @@ def merge_covariates(
         and dst_duplicates_dropped.
     """
     try:
-        load_path = Path(load_csv_path)
-        cov_path = Path(covariate_csv_path)
+        load_path = resolve_data_path(load_csv_path)
+        cov_path = resolve_data_path(covariate_csv_path)
         out_path = Path(output_csv_path)
 
         if not load_path.exists():
-            return create_error_response(f"Load CSV not found: {load_csv_path}")
+            return create_error_response(
+                f"Load CSV not found: {load_csv_path}. " + not_found_hint(load_csv_path)
+            )
         if not cov_path.exists():
-            return create_error_response(f"Covariate CSV not found: {covariate_csv_path}")
+            return create_error_response(
+                f"Covariate CSV not found: {covariate_csv_path}. " + not_found_hint(covariate_csv_path)
+            )
 
         # ------------------------------------------------------------------ #
         # 1. Read load file — detect datetime column
         # ------------------------------------------------------------------ #
-        load_df = pd.read_csv(load_csv_path)
+        load_df = pd.read_csv(load_path)
 
         if load_datetime_col is None:
             # Auto-detect: first column whose name hints at datetime
@@ -150,7 +155,7 @@ def merge_covariates(
         # ------------------------------------------------------------------ #
         # 2. Read covariate file — detect datetime column
         # ------------------------------------------------------------------ #
-        cov_df = pd.read_csv(covariate_csv_path)
+        cov_df = pd.read_csv(cov_path)
 
         if covariate_datetime_col is None:
             _dt_hints = {"datetime", "date", "timestamp", "time"}

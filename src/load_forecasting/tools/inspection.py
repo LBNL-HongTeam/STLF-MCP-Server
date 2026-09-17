@@ -11,6 +11,7 @@ import pandas as pd
 
 from ..core.data_loader import ForecastingDataLoader, DataLoadError, _infer_frequency
 from ..core.frequency_utils import hours_to_steps, FREQ_TO_STEPS_PER_HOUR
+from ..core.paths import resolve_data_path, not_found_hint
 from ._common import (
     create_success_response,
     create_error_response,
@@ -43,18 +44,19 @@ def inspect_data(
         quality flags, and feature suggestions.
     """
     try:
-        path = Path(csv_path)
+        path = resolve_data_path(csv_path)
         if not path.exists():
             return create_error_response(
                 f"File not found: {csv_path}\n"
-                "Check that the path is correct and the file is accessible."
+                "Check that the path is correct and the file is accessible. "
+                + not_found_hint(csv_path)
             )
 
         # ------------------------------------------------------------------
         # Read raw CSV (no preprocessing yet — we want the raw picture)
         # ------------------------------------------------------------------
         try:
-            raw_df = pd.read_csv(csv_path)
+            raw_df = pd.read_csv(path)
         except Exception as e:
             return create_error_response(f"Failed to read CSV: {e}")
 
@@ -81,7 +83,7 @@ def inspect_data(
         try:
             # Pass the already-read raw_df to avoid a second disk read.
             loader = ForecastingDataLoader(
-                csv_path=csv_path,
+                csv_path=str(path),
                 column_mapping=column_mapping,
                 frequency=detected_frequency or "h",
                 add_calendar_features=False,

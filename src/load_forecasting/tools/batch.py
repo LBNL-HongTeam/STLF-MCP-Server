@@ -29,6 +29,7 @@ import logging
 import pandas as pd
 
 from ..core.data_loader import DataLoadError
+from ..core.paths import resolve_data_path
 from ._common import create_success_response, create_error_response
 from .train import train_forecast_model
 from .inference import generate_forecast
@@ -68,7 +69,7 @@ def _expand_wide_csv_jobs(
             missing.
     """
     try:
-        header = pd.read_csv(csv_path, nrows=1)
+        header = pd.read_csv(resolve_data_path(csv_path), nrows=1)
     except Exception as e:
         raise DataLoadError(f"Failed to read CSV '{csv_path}': {e}")
 

@@ -24,6 +24,7 @@ from ..core.model_registry import (
     ModelCorruptedError,
 )
 from ..core.frequency_utils import hours_to_steps, FREQ_TO_STEPS_PER_HOUR
+from ..core.paths import resolve_data_path
 
 logger = logging.getLogger(__name__)
 
@@ -499,7 +500,7 @@ def _parse_raw_csv_for_inference(csv_path: str, column_mapping: dict) -> pd.Data
         DataLoadError: If the file cannot be read or datetime cannot be parsed.
     """
     try:
-        raw_df = pd.read_csv(csv_path)
+        raw_df = pd.read_csv(resolve_data_path(csv_path))
     except Exception as e:
         raise DataLoadError(f"Failed to read CSV '{csv_path}': {e}")
 

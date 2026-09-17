@@ -63,6 +63,9 @@ outputs:
         validation_cv_rmse: { type: number, units: "%" }
         lookback_hours: { type: integer }
         horizon_hours: { type: integer }
+        csv_path: { type: string, description: Absolute path of the training CSV }
+        target_column: { type: string }
+        frequency: { type: string, enum: ["15min", "30min", "h"] }
 
   total_count:
     type: integer
@@ -79,3 +82,4 @@ notes:
   - "Returns models sorted by creation date (newest first) by default"
   - "Sort by validation_cv_rmse to find best performing models"
   - "Use model_id from results with evaluate_forecast_model"
+  - "csv_path/target_column/frequency record what each model was trained on (models saved before this field existed report null)"

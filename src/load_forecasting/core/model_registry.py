@@ -256,7 +256,9 @@ class ModelRegistry:
                     pickle.dump(scalers["future_covariate_scaler"], f)
 
         # Update registry index
-        self._update_registry(model_id, model_type, building_name, validation_metrics, config)
+        self._update_registry(
+            model_id, model_type, building_name, validation_metrics, config, data_info
+        )
 
         logger.info(f"Model saved: {model_id}")
         return str(model_dir)
@@ -268,8 +270,10 @@ class ModelRegistry:
         building_name: Optional[str],
         validation_metrics: dict,
         config: dict,
+        data_info: Optional[dict] = None,
     ) -> None:
         """Update registry index with new model."""
+        data_info = data_info or {}
         registry = self._load_registry()
 
         # Remove existing entry if present (update case)
@@ -284,6 +288,11 @@ class ModelRegistry:
             "validation_cv_rmse": validation_metrics.get("cv_rmse"),
             "lookback_hours": config.get("lookback_hours"),
             "horizon_hours": config.get("horizon_hours"),
+            # Provenance: what the model was trained on, so list_models can
+            # answer "trained on which file?" without loading metadata.json.
+            "csv_path": data_info.get("csv_path"),
+            "target_column": data_info.get("target_column"),
+            "frequency": data_info.get("frequency_detected"),
             "path": f"models/{model_id}",
         }
         registry["models"].append(entry)

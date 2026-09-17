@@ -60,6 +60,7 @@ packages = ["src/load_forecasting"]
 "src/load_forecasting/specs/generate_evaluation_report.yaml" = "load_forecasting/specs/generate_evaluation_report.yaml"
 "src/load_forecasting/specs/generate_forecast.yaml"         = "load_forecasting/specs/generate_forecast.yaml"
 "src/load_forecasting/specs/inspect_data.yaml"              = "load_forecasting/specs/inspect_data.yaml"
+"src/load_forecasting/specs/list_datasets.yaml"             = "load_forecasting/specs/list_datasets.yaml"
 "src/load_forecasting/specs/list_models.yaml"               = "load_forecasting/specs/list_models.yaml"
 "src/load_forecasting/specs/train_forecast_model.yaml"      = "load_forecasting/specs/train_forecast_model.yaml"
 "src/load_forecasting/specs/tune_model.yaml"                = "load_forecasting/specs/tune_model.yaml"

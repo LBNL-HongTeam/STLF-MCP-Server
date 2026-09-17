@@ -1,6 +1,6 @@
 # STLF-MCP-Server
 
-A Model Context Protocol (MCP) server that provides **15 tools** for
+A Model Context Protocol (MCP) server that provides **16 tools** for
 **short-term load forecasting (STLF)** of building and grid electrical demand.
 This server enables AI assistants and other MCP clients to inspect data, merge
 weather, train, tune, evaluate, backtest, and forecast electrical loads — and
@@ -247,13 +247,16 @@ replacing the stdio command stanza with an HTTP one:
 
 ## Available Tools
 
-The server provides **15 tools** organized into **6 categories**. Full parameter
+The server provides **16 tools** organized into **6 categories**. Full parameter
 and return-shape documentation lives in each tool's function signature (FastMCP
 derives the JSON schema from it) and in the YAML specs under
 `src/load_forecasting/specs/`.
 
-### 🗂️ Data Preparation (3 tools)
+### 🗂️ Data Preparation (4 tools)
 
+- `list_datasets` - Enumerate CSV/Parquet files available to the server with
+  absolute paths, row counts, columns, date range and inferred frequency.
+  Scans `LOAD_FORECASTING_DATA_DIR` or the bundled `data/examples` by default
 - `inspect_data` - Profile a CSV before training: detect column roles, infer
   frequency, compute per-column stats, flag gaps/anomalies, suggest features
 - `merge_covariates` - Left-join a covariate CSV (e.g. weather) into a load CSV
@@ -303,6 +306,19 @@ derives the JSON schema from it) and in the YAML specs under
 ## Usage Examples
 
 ### Basic Workflow
+
+0. **Find the data** (optional — skip if you already have a path). Bundled
+   sample datasets ship with the repo under `data/examples/`:
+
+   ```json
+   { "tool": "list_datasets", "arguments": {} }
+   ```
+
+   Each record's `path` is absolute and can be passed straight to the tools
+   below. Included samples: a 3-month 15-minute building load with outdoor
+   temperature (`sample_building_load.csv`) and hourly 2021/2023 AMI
+   aggregates at city, substation and feeder level with matching Open-Meteo
+   weather (`AMI/`).
 
 1. **Inspect the data** before training:
 
@@ -463,7 +479,7 @@ The server follows a layered architecture:
 ┌─────────────────────────┐
 │   MCP Protocol Layer    │  FastMCP server handling client communications
 ├─────────────────────────┤
-│      Tools Layer        │  15 tools organized into 6 categories
+│      Tools Layer        │  16 tools organized into 6 categories
 ├─────────────────────────┤
 │       Core Layer        │  Data loader, trainer, evaluator, model registry,
 │                         │  tuning (Optuna), weather fetcher, spec loader
@@ -521,11 +537,21 @@ environment variables (copy `.env.example` → `.env` for local overrides):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LOAD_FORECASTING_MODEL_DIR` | `./models` | Model storage directory. |
+| `LOAD_FORECASTING_DATA_DIR` | *(unset)* | Directory `list_datasets` scans by default, and an extra root for relative `csv_path` values. Falls back to the bundled `data/examples`. |
 | `MCP_TRANSPORT` | `stdio` | Transport mode (`stdio` or `http`). |
 | `MCP_HTTP_PORT` | `8003` | HTTP port. |
 | `LOG_LEVEL` | `INFO` | Python logging level. |
 | `KMP_DUPLICATE_LIB_OK` | `TRUE` (set by `main.py`) | Tolerate duplicate OpenMP runtime (xgboost + torch on macOS); must be set pre-import. |
 | `OMP_NUM_THREADS` | `1` (set by `main.py`) | Cap OpenMP thread pool. |
+
+**Path resolution.** MCP hosts launch the server from arbitrary working
+directories (Claude Desktop uses `/`), so a relative `csv_path` is resolved
+against, in order: the process working directory, `LOAD_FORECASTING_DATA_DIR`,
+the repository root, and `data/examples`. `data/examples/AMI/2021_city_level.csv`
+and `AMI/2021_city_level.csv` both work from any client. Output paths
+(`output_csv_path`, `output_html_path`) are *not* resolved this way — pass
+them absolute. The server also advertises the dataset directory and these
+rules in its MCP `instructions`, which most hosts place in the model's context.
 
 ## Troubleshooting
 
