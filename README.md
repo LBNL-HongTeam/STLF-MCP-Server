@@ -1,6 +1,6 @@
 # STLF-MCP-Server
 
-A Model Context Protocol (MCP) server that provides **16 tools** for
+A Model Context Protocol (MCP) server that provides **18 tools** for
 **short-term load forecasting (STLF)** of building and grid electrical demand.
 This server enables AI assistants and other MCP clients to inspect data, merge
 weather, train, tune, evaluate, backtest, and forecast electrical loads — and
@@ -247,7 +247,7 @@ replacing the stdio command stanza with an HTTP one:
 
 ## Available Tools
 
-The server provides **16 tools** organized into **6 categories**. Full parameter
+The server provides **18 tools** organized into **6 categories**. Full parameter
 and return-shape documentation lives in each tool's function signature (FastMCP
 derives the JSON schema from it) and in the YAML specs under
 `src/load_forecasting/specs/`.
@@ -296,10 +296,14 @@ derives the JSON schema from it) and in the YAML specs under
 - `generate_inference_dashboard` - Live inference dashboard that refreshes
   weather in the browser
 
-### 🔎 Registry & Discovery (2 tools)
+### 🔎 Registry & Discovery (4 tools)
 
 - `list_models` - List trained models in the registry, with filtering and
-  sorting
+  sorting (including the `csv_path` each was trained on)
+- `list_skills` - List the workflow skills bundled with the server (name,
+  description, section headings)
+- `get_skill` - Load a skill's instructions, one section of it, or a
+  supporting file — see [Agent Skills](#agent-skills)
 - `get_algorithm_specifications` - Return all YAML algorithm specs for
   agent-side model selection
 
@@ -479,7 +483,7 @@ The server follows a layered architecture:
 ┌─────────────────────────┐
 │   MCP Protocol Layer    │  FastMCP server handling client communications
 ├─────────────────────────┤
-│      Tools Layer        │  16 tools organized into 6 categories
+│      Tools Layer        │  18 tools organized into 6 categories
 ├─────────────────────────┤
 │       Core Layer        │  Data loader, trainer, evaluator, model registry,
 │                         │  tuning (Optuna), weather fetcher, spec loader
@@ -513,21 +517,37 @@ resolution).
 
 ## Agent Skills
 
-The top-level `skills/` directory contains optional instruction bundles for AI
-coding agents. Each skill lives in its own directory and is defined by a
-`SKILL.md` file with YAML front matter (`name` and `description`) followed by
-the workflow instructions.
+The top-level `skills/` directory contains instruction bundles for AI agents in
+the open [Agent Skills](https://agentskills.io) format: each skill is a
+directory with a `SKILL.md` (YAML front matter `name` and `description`,
+then the workflow) plus optional supporting files.
 
 `skills/train-forecast-model/SKILL.md` guides an agent through the recommended
-inspect, merge, train, evaluate, backtest, and report sequence using this
-server's MCP tools. It does not implement forecasting logic and is not required
-to run the server; the Python tools remain the authoritative implementation.
+list-datasets → inspect → merge → train → evaluate → backtest → report sequence
+using this server's MCP tools, with hard-stop gates (timezone confirmation,
+GPU consent, hyperparameter decisions) the agent must clear with the user. It
+does not implement forecasting logic; the Python tools remain authoritative.
 
-Agent skills are separate from `src/load_forecasting/specs/`. The `skills/`
-content tells an agent how to orchestrate tools, while the packaged YAML specs
-describe individual algorithms for runtime agent discovery. To use a skill,
-configure your AI client to load or import its directory according to that
-client's skill-discovery mechanism.
+### How agents get the skill
+
+The skill is delivered three ways, so it works whether or not the agent's
+working directory is this repository:
+
+| Path | Who it serves | Setup |
+|---|---|---|
+| **Over MCP** — `list_skills` / `get_skill` tools, plus `skill://index.json` and `skill://<name>/SKILL.md` resources | Every MCP client, any working directory, including `pip`-installed wheels (the skills are packaged) | None beyond configuring the server. The server's MCP `instructions` tell the agent to call `list_skills` before a multi-step task. |
+| **Repo-native discovery** — `.agents/skills/` (Codex) and `.claude/skills/` (Claude Code) symlink to `skills/` | Codex and Claude Code sessions whose working directory is inside this repo | None. Windows clones need `git config core.symlinks true` before cloning, or the links check out as text files. |
+| **User-level install** | A Codex/Claude Code user who wants the skill in every session | Symlink or copy `skills/train-forecast-model` into `~/.agents/skills/` (Codex) or `~/.claude/skills/` (Claude Code). |
+
+`get_skill` accepts `section="Section 3"` (any heading substring) to fetch
+part of a long skill, and `file="references/x.md"` for supporting files. The
+`skill://` resources follow the interim shape recommended by the MCP
+*Skills Over MCP* working group, so they map directly onto the proposed
+`skills/list` / `skills/activate` primitives once those land.
+
+Agent skills are separate from `src/load_forecasting/specs/`: skills tell an
+agent how to *orchestrate* tools; the YAML specs describe individual algorithms
+for runtime discovery via `get_algorithm_specifications`.
 
 ## Configuration
 

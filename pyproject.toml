@@ -70,6 +70,9 @@ packages = ["src/load_forecasting"]
 "src/load_forecasting/specs/generate_inference_dashboard.yaml" = "load_forecasting/specs/generate_inference_dashboard.yaml"
 "src/load_forecasting/specs/batch_train_forecast_models.yaml" = "load_forecasting/specs/batch_train_forecast_models.yaml"
 "src/load_forecasting/specs/batch_generate_forecast.yaml"    = "load_forecasting/specs/batch_generate_forecast.yaml"
+# Agent skills served over MCP (list_skills / get_skill / skill:// resources).
+# Canonical copy is the top-level skills/ tree; packaged so wheel installs work.
+"skills"                                                    = "load_forecasting/skills"
 # HTML report assets (Jinja template, CSS, vendored JS)
 "src/load_forecasting/reporting/template.html"              = "load_forecasting/reporting/template.html"
 "src/load_forecasting/reporting/styles.css"                 = "load_forecasting/reporting/styles.css"

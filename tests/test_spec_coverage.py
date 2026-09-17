@@ -20,9 +20,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from load_forecasting.server import mcp
 from load_forecasting.core.spec_loader import get_all_specs, load_spec, validate_spec
 
-# The discovery tool itself is intentionally NOT given a spec: it is the
-# mechanism that surfaces specs, not a forecasting algorithm to be discovered.
-SPEC_EXEMPT_TOOLS = {"get_algorithm_specifications"}
+# Discovery tools are intentionally NOT given a spec: they are the mechanisms
+# that surface specs and skills, not forecasting algorithms to be discovered.
+SPEC_EXEMPT_TOOLS = {"get_algorithm_specifications", "list_skills", "get_skill"}
 
 SPECS_DIR = Path(__file__).parent.parent / "src" / "load_forecasting" / "specs"
 

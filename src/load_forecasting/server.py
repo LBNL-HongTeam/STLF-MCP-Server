@@ -2,6 +2,7 @@
 FastMCP Server Configuration and Tool Registration
 """
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -10,12 +11,15 @@ from fastmcp import FastMCP
 
 from .core.spec_loader import get_all_specs
 from .core.paths import ENV_DATA_DIR, default_dataset_dir
+from .core import skill_loader
 from .tools import (
     train_forecast_model,
     evaluate_forecast_model,
     list_models,
     inspect_data,
     list_datasets,
+    list_skills,
+    get_skill,
     tune_model,
     generate_forecast,
     backtest_model,
@@ -75,6 +79,16 @@ def _build_instructions() -> str:
         f"Trained models are stored under {model_dir}. list_models reports the "
         "csv_path, target_column and frequency each model was trained on."
     )
+    skills = skill_loader.list_skills()
+    if skills:
+        names = ", ".join(s["name"] for s in skills)
+        lines.append(
+            f"This server bundles workflow skills ({names}). Before any multi-step "
+            "forecasting task, call list_skills and then get_skill(name) and follow "
+            "the returned instructions; they define the mandatory checks and tool "
+            "order. The same content is available as MCP resources at "
+            "skill://index.json and skill://{name}/SKILL.md."
+        )
     return "\n".join(lines)
 
 
@@ -87,6 +101,8 @@ mcp.add_tool(evaluate_forecast_model)
 mcp.add_tool(list_models)
 mcp.add_tool(inspect_data)
 mcp.add_tool(list_datasets)
+mcp.add_tool(list_skills)
+mcp.add_tool(get_skill)
 mcp.add_tool(tune_model)
 mcp.add_tool(generate_forecast)
 mcp.add_tool(backtest_model)
@@ -97,6 +113,47 @@ mcp.add_tool(fetch_weather_forecast)
 mcp.add_tool(generate_inference_dashboard)
 mcp.add_tool(batch_train_forecast_models)
 mcp.add_tool(batch_generate_forecast)
+
+
+# ---------------------------------------------------------------------------
+# Skills over MCP -- resource view
+#
+# Same content as the list_skills / get_skill tools, exposed in the shape the
+# MCP "Skills Over MCP" working group recommends for servers today: a
+# discovery index plus one markdown resource per skill, read lazily via
+# resources/read. Clients that surface resources (Claude Code, Claude Desktop)
+# can pull a skill without spending a tool call; the tools remain for clients
+# that do not.
+# ---------------------------------------------------------------------------
+
+@mcp.resource(
+    "skill://index.json",
+    name="skills_index",
+    description="Index of the workflow skills bundled with this server (name, description, sections).",
+    mime_type="application/json",
+)
+def skills_index_resource() -> str:
+    return json.dumps({"skills": skill_loader.list_skills()}, indent=2)
+
+
+@mcp.resource(
+    "skill://{name}/SKILL.md",
+    name="skill_markdown",
+    description="Full SKILL.md for one bundled skill; `name` comes from skill://index.json.",
+    mime_type="text/markdown",
+)
+def skill_markdown_resource(name: str) -> str:
+    return skill_loader.get_skill(name)["content"]
+
+
+@mcp.resource(
+    "skill://{name}/files/{path*}",
+    name="skill_file",
+    description="A supporting file from a bundled skill (see its supporting_files list).",
+    mime_type="text/plain",
+)
+def skill_file_resource(name: str, path: str) -> str:
+    return skill_loader.get_skill_file(name, path)["content"]
 
 
 def get_algorithm_specifications() -> dict:
