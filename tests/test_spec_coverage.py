@@ -19,6 +19,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from load_forecasting.server import mcp
 from load_forecasting.core.spec_loader import get_all_specs, load_spec, validate_spec
+from load_forecasting.core.data_loader import (
+    DEFAULT_DATETIME_PATTERNS,
+    DEFAULT_TARGET_PATTERNS,
+    DEFAULT_COVARIATE_PATTERNS,
+)
 
 # Discovery tools are intentionally NOT given a spec: they are the mechanisms
 # that surface specs and skills, not forecasting algorithms to be discovered.
@@ -88,3 +93,18 @@ def test_spec_has_required_fields(spec_file):
         f"{spec_file.name} is missing one of the required fields "
         f"(id, version, mcp_server, mcp_tool)."
     )
+
+
+@pytest.mark.parametrize("spec_name", ["train_forecast_model", "inspect_data"])
+def test_auto_detect_patterns_match_code(spec_name):
+    """The YAML auto_detect_patterns are documentation of the code constants.
+
+    ForecastingDataLoader reads train_forecast_model.yaml at runtime and falls
+    back to the constants only if the spec is missing, so the two must agree
+    or auto-detection would differ between source checkouts and wheels.
+    """
+    spec = load_spec(spec_name)
+    props = next(i for i in spec["inputs"] if i["name"] == "column_mapping")["properties"]
+    assert props["datetime"]["auto_detect_patterns"] == DEFAULT_DATETIME_PATTERNS
+    assert props["target"]["auto_detect_patterns"] == DEFAULT_TARGET_PATTERNS
+    assert props["past_covariates"]["auto_detect_patterns"] == DEFAULT_COVARIATE_PATTERNS

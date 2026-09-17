@@ -56,6 +56,16 @@ _CALENDAR_COLS = [
 ]
 
 
+# Column auto-detection patterns (case-insensitive substrings of the column
+# name).  These are the canonical lists; the YAML specs repeat them for agent
+# discovery and a drift-guard test keeps the two in sync.  Covariate patterns
+# cover the names produced by merge_covariates / fetch_weather_forecast and the
+# Open-Meteo bundle (T_out, RH_out, Direct_Radiation, Cloud_Cover, Rain, ...).
+DEFAULT_DATETIME_PATTERNS = ["datetime", "timestamp", "date", "time", "dt"]
+DEFAULT_TARGET_PATTERNS = ["kwh", "load", "power", "energy", "electricity", "demand"]
+DEFAULT_COVARIATE_PATTERNS = ["temp", "temperature", "t_out", "tout", "rh", "humidity", "solar", "radiation", "irradiance", "ghi", "dni", "dhi", "wind", "cloud", "rain", "precip", "dew", "sunshine"]
+
+
 class DataLoadError(Exception):
     """Raised when data loading or validation fails."""
 
@@ -232,9 +242,9 @@ class ForecastingDataLoader:
         # Fallback patterns if spec is not loaded
         if not patterns:
             patterns = {
-                "datetime": ["datetime", "timestamp", "date", "time", "dt"],
-                "target": ["kwh", "load", "power", "energy", "electricity", "demand"],
-                "past_covariates": ["temp", "temperature", "rh", "humidity", "solar", "wind"],
+                "datetime": DEFAULT_DATETIME_PATTERNS,
+                "target": DEFAULT_TARGET_PATTERNS,
+                "past_covariates": DEFAULT_COVARIATE_PATTERNS,
             }
 
         resolved: dict = {}

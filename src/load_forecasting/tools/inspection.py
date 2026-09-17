@@ -9,7 +9,14 @@ import logging
 import numpy as np
 import pandas as pd
 
-from ..core.data_loader import ForecastingDataLoader, DataLoadError, _infer_frequency
+from ..core.data_loader import (
+    ForecastingDataLoader,
+    DataLoadError,
+    _infer_frequency,
+    DEFAULT_DATETIME_PATTERNS,
+    DEFAULT_TARGET_PATTERNS,
+    DEFAULT_COVARIATE_PATTERNS,
+)
 from ..core.frequency_utils import hours_to_steps, FREQ_TO_STEPS_PER_HOUR
 from ..core.paths import resolve_data_path, not_found_hint
 from ._common import (
@@ -690,9 +697,9 @@ def _sniff_columns(raw_df: pd.DataFrame, mapping: Optional[dict]) -> dict:
             result["future_covariates"] = []
         return result
 
-    dt_patterns = ["datetime", "timestamp", "date", "time", "dt"]
-    target_patterns = ["kwh", "load", "power", "energy", "electricity", "demand"]
-    cov_patterns = ["temp", "temperature", "rh", "humidity", "solar", "wind"]
+    dt_patterns = DEFAULT_DATETIME_PATTERNS
+    target_patterns = DEFAULT_TARGET_PATTERNS
+    cov_patterns = DEFAULT_COVARIATE_PATTERNS
 
     result: dict = {"past_covariates": [], "future_covariates": []}
     for col in raw_df.columns:

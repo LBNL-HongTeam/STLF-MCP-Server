@@ -38,6 +38,7 @@ def _year_csv(path: Path, freq: str = "h", covariates: bool = True, gap: bool = 
     if covariates:
         df["T_out"] = temp.round(2)
         df["RH_out"] = (60 + 20 * np.cos(hours / 24 * 2 * np.pi)).round(1)
+        df["site_index"] = (np.arange(len(idx)) % 7).astype(float)  # matches no pattern
     if gap:
         df = df.drop(df.index[1000:1030])  # 30-step hole
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -115,11 +116,13 @@ class TestPayload:
     def test_default_covariates_include_unmapped_numeric_columns(self, year_loader):
         p = build_data_report_payload(year_loader, csv_path="x.csv")
         names = {c["name"]: c["role"] for c in p.meta["covariates"]}
-        # RH_out matches the auto-detect patterns; T_out currently does not.
+        # T_out / RH_out match the auto-detect patterns; site_index does not,
+        # but is still drawn and tagged so a missed mapping is visible.
+        assert names["T_out"] == "past_covariate"
         assert names["RH_out"] == "past_covariate"
-        assert names["T_out"] == "unmapped"
-        assert "T_out" in p.meta["unmapped_covariates"]
-        assert set(p.series["covariates"]) == {"T_out", "RH_out"}
+        assert names["site_index"] == "unmapped"
+        assert p.meta["unmapped_covariates"] == ["site_index"]
+        assert set(p.series["covariates"]) == {"T_out", "RH_out", "site_index"}
         assert len(p.series["t"]) == len(p.series["target"]) == len(p.series["role"]) == 8760
 
     def test_explicit_covariate_subset_and_missing(self, year_loader):
@@ -206,7 +209,7 @@ class TestGenerateDataReportTool:
         assert Path(r["output_html_path"]) == out.resolve() and out.stat().st_size == r["file_size_bytes"]
         assert r["n_rows"] == 8760 and r["frequency"] == "h" and r["target"] == "load_kwh"
         assert r["split"]["strategy"] == "seasonal" and len(r["split"]["segments"]) == 9
-        assert r["unmapped_covariates"] == ["T_out"]
+        assert r["unmapped_covariates"] == ["site_index"]
         assert r["ready_to_train"] is True
         assert "split" in " ".join(r["sections"])
 

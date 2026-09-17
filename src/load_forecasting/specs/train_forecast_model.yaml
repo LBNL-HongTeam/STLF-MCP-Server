@@ -57,7 +57,7 @@ inputs:
         items: { type: string }
         description: Optional weather/feature columns known only for past timesteps
         example: ["T_out", "RH_out"]
-        auto_detect_patterns: ["temp", "temperature", "rh", "humidity", "solar", "wind"]
+        auto_detect_patterns: ["temp", "temperature", "t_out", "tout", "rh", "humidity", "solar", "radiation", "irradiance", "ghi", "dni", "dhi", "wind", "cloud", "rain", "precip", "dew", "sunshine"]
       future_covariates:
         type: array
         items: { type: string }
