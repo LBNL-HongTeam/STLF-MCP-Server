@@ -44,6 +44,8 @@ Before any tool call, confirm with the user:
 
 1. **Timezone.** (Already handled by the §1.0 gate — must be explicitly answered by the user, never guessed.) What timezone are the load timestamps in? Are they naive (local time strings) or tz-aware (with `+00:00` etc.)? Timezone confusion is the #1 source of silent bad merges.
 2. **CSV path(s).** How many input files? Where are they? If more than one, jump to §2.5 (multi-CSV merge workflow); the single-file path in §2 applies only when exactly one CSV was provided.
+   - If the user has **no data yet**, or asks what is available, call `list_datasets` (no arguments) and present the bundled sample datasets with their absolute `path` values. Never conclude that no data exists without calling it. The §1.0 timezone gate still applies to a bundled file — ask, do not infer.
+   - Pass `csv_path` as the absolute `path` returned by `list_datasets` whenever possible. Relative paths are resolved against the server's data roots, not the client's working directory.
 3. **Target semantics.** Is the target column energy (kWh per interval) or power (kW instantaneous)? This affects interpretation of metrics and peak-day analysis.
 4. **Data cadence.** 15-min, 30-min, or hourly? Must match one of `{"15min", "30min", "h"}`. Anything else is unsupported and will hard-block.
 5. **Model choice.** Do NOT silently default to `LinearRegression`. Show the decision matrix in §3 and let the user pick, or ask for their constraints (speed vs accuracy, covariate availability, deployment target).
@@ -621,6 +623,7 @@ Before declaring the task complete, verify every item:
 
 | Tool | Purpose | Required args | Notable optional args | Key return keys |
 |---|---|---|---|---|
+| `list_datasets` | Enumerate available CSV/Parquet files with absolute paths | — | `directory`, `recursive`, `include_stats`, `limit` | `datasets[].path`, `rows`, `columns`, `frequency`, `start`/`end` |
 | `inspect_data` | EDA + validation pre-flight | `csv_path` | `column_mapping`, `frequency` | `ready_to_train`, `blocking_issues`, `quality_flags`, `columns`, `time_range`, `frequency` |
 | `merge_covariates` | Pairwise LEFT-JOIN load + covariate CSV | `load_csv_path`, `covariate_csv_path`, `output_csv_path` | `load_datetime_col`, `covariate_datetime_col`, `covariate_columns`, `covariate_timezone`, `load_timezone` | `n_rows`, `covariate_columns`, `n_missing_filled`, `dst_duplicates_dropped`, `timezone_conversion` |
 | `fetch_weather_forecast` | Pull Open-Meteo weather | `latitude`, `longitude` | `forecast_hours`, `past_hours`, `timezone`, `variables`/`preset`, `resolution` | weather rows + optional CSV write |
@@ -632,5 +635,5 @@ Before declaring the task complete, verify every item:
 | `generate_backtest_report` | HTML report from backtest (richer) | `model_id`, `csv_path`, `output_html_path` | `stride_hours`, `start_fraction`, `peak_dates`, `title` | `output_html_path`, `backtest_metrics`, h-step curves |
 | `generate_inference_dashboard` | HTML forecast dashboard | `model_id`, `csv_path`, `output_html_path`, `latitude`, `longitude` | `column_mapping`, `horizon_hours` | dashboard HTML |
 | `generate_forecast` | One-shot forward inference | `model_id`, `csv_path` | `column_mapping`, `horizon_hours`, `output_csv_path` | `predictions`, `forecast_start/end`, `context_summary` |
-| `list_models` | Query the model registry | — | `building_name`, `model_type`, `sort_by`, `limit` | `models`, `total_count` |
+| `list_models` | Query the model registry | — | `building_name`, `model_type`, `sort_by`, `limit` | `models[]` incl. `csv_path`, `target_column`, `frequency` (what each model was trained on), `total_count` |
 | `get_algorithm_specifications` | Return all YAML specs | — | — | `specs`, `count` |
