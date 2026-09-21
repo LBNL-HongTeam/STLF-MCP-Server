@@ -78,7 +78,9 @@
       g.appendChild(makeKV("Lookback / horizon", `${m.config.lookback_hours ?? "—"} h / ${m.config.horizon_hours ?? "—"} h`));
       g.appendChild(makeKV("Split", `${m.split.strategy || "—"} · ${Math.round((m.config.validation_split || 0) * 100)}% val`));
       g.appendChild(makeKV("Covariates", `${m.data.past_covariates.length} past${m.data.generated_covariates.length ? ` (+${m.data.generated_covariates.length} generated)` : ""} · ${m.data.future_covariates.length} future`));
-      g.appendChild(makeKV("Device", m.config.device || "n/a (non-Torch)"));
+      const envSum = m.environment && m.environment.summary;
+      g.appendChild(makeKV("Device", envSum || m.config.device || "n/a (non-Torch)"));
+      if (m.environment) g.appendChild(makeKV("Machine", `${m.environment.cpu || "—"} · ${m.environment.os || "—"}`));
       g.appendChild(makeKV("Training time", m.training.time_s !== null ? `${fmt(m.training.time_s, 1)} s` : "—"));
       g.appendChild(makeKV(m.training.x_label ? `${m.training.x_label}s recorded` : "Curve", m.training.n_points !== null ? String(m.training.n_points) : "none"));
       card.appendChild(g);
@@ -339,6 +341,37 @@
       marks: [Plot.barY(rows.filter(r => r.energy !== null), { x: "label", y: "energy", fill: d => colorOf[d.id], tip: true, sort: null }), Plot.ruleY([0])] }));
   }
 
+  function renderEnvironment() {
+    const host = $("environment-table"); clear(host);
+    const envs = MODELS.map(m => m.environment);
+    if (!envs.some(Boolean)) { host.appendChild(el("div", "note", "No environment recorded — these models were trained before machine info was captured.")); return; }
+    const v = (e, f) => (e ? f(e) : null);
+    const fields = [
+      ["Hostname", e => e.hostname],
+      ["OS", e => e.os],
+      ["CPU", e => e.cpu ? `${e.cpu} (${e.cpu_count ?? "?"} cores)` : null],
+      ["Memory", e => e.memory_gb !== null && e.memory_gb !== undefined ? `${e.memory_gb} GB` : null],
+      ["Accelerator", e => e.accelerator.type ? `${e.accelerator.type.toUpperCase()}${e.accelerator.requested && e.accelerator.requested !== e.accelerator.effective ? ` (requested ${e.accelerator.requested})` : ""}` : null],
+      ["Accelerator device", e => e.accelerator.name],
+      ["GPU memory", e => e.accelerator.memory_gb ? `${e.accelerator.memory_gb} GB${e.accelerator.type === "mps" ? " (unified)" : ""}` : null],
+      ["CUDA", e => e.accelerator.cuda_version],
+      ["GPU count", e => e.accelerator.device_count],
+      ["Torch threads / OMP", e => (e.accelerator.torch_threads || e.omp_num_threads) ? `${e.accelerator.torch_threads ?? "—"} / ${e.omp_num_threads ?? "—"}` : null],
+      ["Python", e => e.python],
+      ["torch", e => e.versions.torch],
+      ["pytorch-lightning", e => e.versions.pytorch_lightning],
+      ["darts", e => e.versions.darts],
+      ["xgboost", e => e.versions.xgboost],
+      ["optuna", e => e.versions.optuna],
+      ["numpy", e => e.versions.numpy],
+    ];
+    const headers = ["", ...MODELS.map(m => tagOf[m.model_id])];
+    const rows = fields
+      .map(([label, f]) => [label, ...envs.map(e => { const x = v(e, f); return x === null || x === undefined ? (e ? "—" : "not recorded") : String(x); })])
+      .filter(r => r.slice(1).some(c => c !== "—"));
+    host.appendChild(makeTable(headers, rows, []));
+  }
+
   function renderFlags() {
     const host = $("flags-list"); clear(host);
     let any = false;
@@ -354,7 +387,7 @@
   }
 
   try {
-    renderHeader(); renderCards(); renderCurveToolbar(); renderCurves(); renderMetrics(); renderSplits(); renderTuning(); renderCompute(); renderFlags();
+    renderHeader(); renderCards(); renderCurveToolbar(); renderCurves(); renderMetrics(); renderSplits(); renderTuning(); renderCompute(); renderEnvironment(); renderFlags();
     let timer = null, last = fullWidth();
     window.addEventListener("resize", () => { clearTimeout(timer); timer = setTimeout(() => { const w = fullWidth(); if (w !== last) { last = w; renderCurves(); renderSplits(); renderTuning(); } }, 150); });
   } catch (err) {

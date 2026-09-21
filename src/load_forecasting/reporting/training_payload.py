@@ -184,6 +184,38 @@ def _tuning(info: Optional[dict]) -> Optional[dict]:
     }
 
 
+def _environment(env: Optional[dict]) -> Optional[dict]:
+    """Machine / library snapshot recorded at training time (None for older models)."""
+    if not env:
+        return None
+    acc = env.get("accelerator") or {}
+    ver = env.get("versions") or {}
+    parts = [p for p in (acc.get("type") and acc["type"].upper(), acc.get("name")) if p]
+    return {
+        "hostname": env.get("hostname"),
+        "os": env.get("os"),
+        "platform": env.get("platform"),
+        "machine": env.get("machine"),
+        "cpu": env.get("cpu"),
+        "cpu_count": env.get("cpu_count"),
+        "memory_gb": env.get("memory_gb"),
+        "python": env.get("python"),
+        "versions": {k: ver.get(k) for k in ("darts", "torch", "pytorch_lightning", "xgboost", "optuna", "numpy")},
+        "omp_num_threads": env.get("omp_num_threads"),
+        "accelerator": {
+            "requested": acc.get("requested"),
+            "effective": acc.get("effective"),
+            "type": acc.get("type"),
+            "name": acc.get("name"),
+            "cuda_version": acc.get("cuda_version"),
+            "device_count": acc.get("device_count"),
+            "memory_gb": acc.get("memory_gb"),
+            "torch_threads": acc.get("torch_threads"),
+        },
+        "summary": " · ".join(parts) if parts else None,
+    }
+
+
 def _model_block(model_id: str, meta: dict) -> dict:
     cfg = meta.get("config") or {}
     info = meta.get("training_info") or {}
@@ -238,6 +270,7 @@ def _model_block(model_id: str, meta: dict) -> dict:
             "train_steps": split.get("train_steps"),
             "validation_steps": split.get("validation_steps"),
         },
+        "environment": _environment(info.get("environment")),
         "training": {
             "time_s": _f(info.get("training_time_seconds"), 2),
             "energy_kwh": _f(info.get("energy_kwh"), 8),

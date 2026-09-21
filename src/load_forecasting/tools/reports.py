@@ -862,6 +862,12 @@ def generate_training_report(
                     "validation_metrics": b["metrics"]["validation"],
                     "training_metrics": b["metrics"]["training"],
                     "training_time_s": b["training"]["time_s"],
+                    "environment": (
+                        {k: b["environment"][k] for k in ("hostname", "os", "cpu", "memory_gb", "python")}
+                        | {"accelerator": b["environment"]["accelerator"]["name"], "accelerator_type": b["environment"]["accelerator"]["type"],
+                           "torch": b["environment"]["versions"]["torch"], "darts": b["environment"]["versions"]["darts"]}
+                        if b["environment"] else None
+                    ),
                     "split_strategy": b["split"]["strategy"],
                     "flags": b["flags"],
                     "tuning": (

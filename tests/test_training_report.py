@@ -14,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from load_forecasting.core.model_registry import ModelRegistry, ModelNotFoundError
 from load_forecasting.reporting import build_training_report_payload, build_training_report_html
-from load_forecasting.reporting.training_payload import _curve, _flags
+from load_forecasting.reporting.training_payload import _curve, _flags, _environment
+from load_forecasting.core.trainer import collect_environment
 from load_forecasting.tools import generate_training_report, train_forecast_model, tune_model
 
 
@@ -223,3 +224,46 @@ def test_generate_training_report_tool(load_csv, model_dir, tmp_path, monkeypatc
     assert generate_training_report()["success"] is False
     assert "not found" in generate_training_report(model_id="nope")["error"].lower()
     assert generate_training_report(model_id=a["model_id"], output_html_path=str(tmp_path / "x.txt"))["success"] is False
+
+
+# ---------------------------------------------------------------------------
+# Environment capture
+# ---------------------------------------------------------------------------
+
+class TestEnvironment:
+    def test_collect_environment_shape(self):
+        env = collect_environment("XGBoost")
+        assert {"hostname", "os", "platform", "machine", "cpu", "cpu_count", "memory_gb", "python", "versions", "accelerator"} <= set(env)
+        assert env["python"] and env["versions"]["darts"] and env["versions"]["xgboost"]
+        assert env["accelerator"]["type"] == "cpu" and env["accelerator"]["effective"] == "cpu"
+        json.dumps(env)  # must be JSON-serialisable for metadata.json
+
+    def test_collect_environment_torch_cpu(self):
+        env = collect_environment("LSTM", "cpu")
+        acc = env["accelerator"]
+        assert acc["requested"] == "cpu" and acc["type"] == "cpu" and acc["torch_threads"] >= 1
+        assert env["versions"]["torch"]
+
+    def test_recorded_at_training_time(self, load_csv, model_dir):
+        r = train_forecast_model(csv_path=str(load_csv), model_type="XGBoost", lookback_hours=24, horizon_hours=6,
+                                 building_name="b", model_kwargs={"n_estimators": 3})
+        env = r["training_info"]["environment"]
+        assert env["cpu"] and env["os"] and env["accelerator"]["type"] == "cpu"
+        meta = json.loads((model_dir / r["model_id"] / "metadata.json").read_text())
+        assert meta["training_info"]["environment"]["python"] == env["python"]
+
+    def test_payload_block_and_missing(self):
+        env = collect_environment("LSTM", "cpu")
+        block = _environment(env)
+        assert block["summary"].startswith("CPU · ")
+        assert block["versions"]["torch"] == env["versions"]["torch"]
+        assert _environment(None) is None            # models trained before capture existed
+        p = build_training_report_payload([("old", _meta("old", "LSTM"))])
+        assert p.models[0]["environment"] is None
+
+    def test_tool_summary_includes_environment(self, load_csv, model_dir, tmp_path):
+        r = train_forecast_model(csv_path=str(load_csv), model_type="NaiveMean", building_name="b")
+        rep = generate_training_report(model_id=r["model_id"], output_html_path=str(tmp_path / "e.html"))
+        e = rep["models"][0]["environment"]
+        assert e and e["cpu"] and e["accelerator_type"] == "cpu" and e["darts"]
+        assert "Environment" in Path(rep["output_html_path"]).read_text()

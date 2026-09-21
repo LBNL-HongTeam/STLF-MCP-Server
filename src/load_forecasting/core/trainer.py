@@ -17,6 +17,7 @@ Supports:
 
 from contextlib import contextmanager, nullcontext
 from typing import Optional, Any
+import os
 import time
 import logging
 
@@ -348,6 +349,120 @@ _MODEL_WATTS: dict = {
     "TimesFM+Residual": 165,
 }
 _DEFAULT_WATTS = 65  # fallback for unknown model types
+
+
+def _cpu_brand() -> Optional[str]:
+    """Human-readable CPU name; platform.processor() is empty on macOS/arm."""
+    import platform as _pl
+    import subprocess
+
+    try:
+        if _pl.system() == "Darwin":
+            out = subprocess.run(
+                ["sysctl", "-n", "machdep.cpu.brand_string"],
+                capture_output=True, text=True, timeout=2,
+            )
+            if out.returncode == 0 and out.stdout.strip():
+                return out.stdout.strip()
+        elif _pl.system() == "Linux":
+            with open("/proc/cpuinfo", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if line.lower().startswith("model name"):
+                        return line.split(":", 1)[1].strip()
+    except Exception:
+        pass
+    return _pl.processor() or None
+
+
+def _memory_gb() -> Optional[float]:
+    try:
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page = os.sysconf("SC_PAGE_SIZE")
+        return round(pages * page / 1e9, 1)
+    except (ValueError, OSError, AttributeError):
+        return None
+
+
+def collect_environment(model_type: str, accelerator: Optional[str] = None) -> dict:
+    """Snapshot of the machine and libraries a model was trained with.
+
+    Recorded into ``training_info["environment"]`` at training time so the
+    training report can show it later, even when the report is rendered on a
+    different machine.  Every field is best-effort; failures leave None.
+    """
+    import platform as _pl
+    import importlib.metadata as _im
+
+    def _ver(pkg: str) -> Optional[str]:
+        try:
+            return _im.version(pkg)
+        except Exception:
+            return None
+
+    if _pl.system() == "Darwin" and _pl.mac_ver()[0]:
+        os_name = f"macOS {_pl.mac_ver()[0]}"
+    else:
+        os_name = f"{_pl.system()} {_pl.release()}".strip() or None
+    env: dict = {
+        "hostname": _pl.node() or None,
+        "os": os_name,
+        "platform": _pl.platform(),
+        "machine": _pl.machine(),
+        "cpu": _cpu_brand(),
+        "cpu_count": os.cpu_count(),
+        "memory_gb": _memory_gb(),
+        "python": _pl.python_version(),
+        "versions": {
+            "darts": _ver("darts"),
+            "torch": _ver("torch"),
+            "pytorch_lightning": _ver("pytorch-lightning") or _ver("lightning"),
+            "xgboost": _ver("xgboost"),
+            "optuna": _ver("optuna"),
+            "numpy": _ver("numpy"),
+        },
+        "omp_num_threads": os.environ.get("OMP_NUM_THREADS"),
+        "accelerator": {
+            "requested": accelerator,
+            "effective": None,
+            "type": None,
+            "name": None,
+            "cuda_version": None,
+            "device_count": None,
+            "memory_gb": None,
+            "torch_threads": None,
+        },
+    }
+    acc = env["accelerator"]
+    if model_type not in _TORCH_MODEL_NAMES:
+        acc["effective"] = "cpu"
+        acc["type"] = "cpu"
+        acc["name"] = env["cpu"]
+        return env
+    try:
+        import torch
+
+        acc["torch_threads"] = torch.get_num_threads()
+        eff = accelerator or _detect_accelerator()
+        acc["effective"] = eff
+        if eff == "cuda" and torch.cuda.is_available():
+            acc["type"] = "cuda"
+            acc["name"] = torch.cuda.get_device_name(0)
+            acc["cuda_version"] = getattr(torch.version, "cuda", None)
+            acc["device_count"] = torch.cuda.device_count()
+            try:
+                acc["memory_gb"] = round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1)
+            except Exception:
+                pass
+        elif eff == "mps":
+            acc["type"] = "mps"
+            acc["name"] = f"{env['cpu']} GPU (Metal)" if env["cpu"] else "Apple Silicon GPU (Metal)"
+            acc["memory_gb"] = env["memory_gb"]  # unified memory
+        else:
+            acc["type"] = "cpu"
+            acc["name"] = env["cpu"]
+    except Exception as e:  # never let diagnostics break training
+        logger.debug("accelerator probe failed: %s", e)
+    return env
 
 
 def _extract_xgb_eval_history(model: Any) -> Optional[dict]:
@@ -1313,6 +1428,10 @@ def train_model(
         "horizon_steps": horizon,
         "energy_kwh": energy_kwh,
         "watts_assumed": watts_assumed,
+        "environment": collect_environment(
+            model_type,
+            _requested_accelerator if model_type in _TORCH_MODEL_NAMES else None,
+        ),
     }
     # Per-epoch learning curve (Torch models only).  Only recorded when the
     # callback captured at least one epoch; absent otherwise so downstream

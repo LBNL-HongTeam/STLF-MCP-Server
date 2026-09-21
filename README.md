@@ -55,7 +55,8 @@ and forward forecasts — as MCP tools any client can call.
   PMAPE/PTE metrics.
 - 📉 **Training diagnostics**: per-epoch (Torch) and per-round (XGBoost)
   learning curves recorded at training time and rendered by
-  `generate_training_report`, with convergence and overfitting checks.
+  `generate_training_report`, with convergence and overfitting checks and
+  the training machine's platform, accelerator and library versions.
 - 🔁 **Rolling-window backtesting** with h-step-ahead error degradation.
 - 🔍 **Hyperparameter tuning** via Optuna.
 - 🗂️ **Batch / multi-series** fan-out over many feeders or meters (fault
