@@ -350,6 +350,60 @@ _MODEL_WATTS: dict = {
 _DEFAULT_WATTS = 65  # fallback for unknown model types
 
 
+def _extract_xgb_eval_history(model: Any) -> Optional[dict]:
+    """Per-boosting-round eval curve from a fitted Darts XGBModel.
+
+    Darts wraps one ``XGBRegressor`` per output step in a MultiOutputRegressor
+    (``multi_models=True``) and forwards ``val_series`` as ``eval_set``; each
+    booster then holds ``evals_result()``.  Curves are averaged across the
+    per-step boosters.  XGBoost names eval sets ``validation_0, validation_1,
+    ...`` in the order given; Darts passes only the validation split, so a
+    single set is the validation curve.  Returns None when nothing was
+    recorded (e.g. val_series was not passed).
+    """
+    try:
+        inner = getattr(model, "model", None)
+        estimators = list(getattr(inner, "estimators_", None) or ([inner] if inner is not None else []))
+        per_set: dict[str, list[list[float]]] = {}
+        metric_name: Optional[str] = None
+        for est in estimators:
+            get = getattr(est, "evals_result", None)
+            if get is None:
+                continue
+            ev = get() or {}
+            for set_name, metrics in ev.items():
+                for m, values in metrics.items():
+                    metric_name = metric_name or m
+                    if m != metric_name or not values:
+                        continue
+                    per_set.setdefault(set_name, []).append([float(v) for v in values])
+        if not per_set:
+            return None
+
+        def _avg(rows: list[list[float]]) -> list[float]:
+            n = min(len(r) for r in rows)
+            return [round(sum(r[i] for r in rows) / len(rows), 6) for i in range(n)]
+
+        curves = {name: _avg(rows) for name, rows in sorted(per_set.items())}
+        names = list(curves)
+        if len(names) >= 2:
+            train, val = curves[names[0]], curves[names[1]]
+        else:
+            train, val = None, curves[names[0]]
+        n = len(val)
+        return {
+            "epochs": list(range(1, n + 1)),
+            "train_loss": train[:n] if train else [None] * n,
+            "val_loss": val,
+            "x_label": "iteration",
+            "metric": metric_name or "rmse",
+            "n_estimators": len(estimators),
+        }
+    except Exception as e:  # never let diagnostics break training
+        logger.debug("XGBoost eval history unavailable: %s", e)
+        return None
+
+
 def _estimate_training_energy_kwh(
     training_time_seconds: float,
     model_type: str,
@@ -411,6 +465,13 @@ _TORCH_MODEL_NAMES: frozenset = frozenset(
 # meaningful.  TimesFM (foundation model, minimal fine-tuning) and
 # TimesFM+Residual (custom hybrid fit signature) are intentionally excluded.
 _PL_LIGHTNING_MODELS: frozenset = frozenset({"LSTM", "TFT", "TiDE", "TSMixer"})
+
+# Models that are handed the validation split at fit time so a per-epoch /
+# per-iteration validation curve is produced.  XGBoost joins the Lightning
+# models: Darts' XGBModel.fit accepts val_series and forwards it as
+# eval_set, and the booster then records validation RMSE per boosting
+# round (no early stopping is enabled, so the fitted model is unchanged).
+_VAL_SERIES_MODELS: frozenset = _PL_LIGHTNING_MODELS | frozenset({"XGBoost"})
 
 # Foundation models that support no covariates at all — used to gate the
 # tool-layer covariate warnings.  TimesFM 2.5 dropped the XReg pathway from
@@ -1172,10 +1233,10 @@ def train_model(
                 # For native Darts Lightning models, pass the validation series
                 # so Lightning runs a per-epoch validation loop and logs
                 # val_loss — this populates the validation line on the
-                # training-curve report.  Non-Torch RegressionModels
-                # (LinearRegression, XGBoost) do not accept val_* kwargs, and
-                # the TimesFM+Residual hybrid has a custom fit() signature that
-                # rejects them — so restrict to _PL_LIGHTNING_MODELS.
+                # training-curve report.  XGBoost also accepts val_series
+                # (forwarded to the booster as eval_set).  LinearRegression
+                # ignores it and the TimesFM+Residual hybrid has a custom
+                # fit() signature that rejects it -- see _VAL_SERIES_MODELS.
                 # Keep only validation chunks long enough to yield at least one
                 # training sample; Darts raises if any series in the sequence is
                 # shorter than lookback + horizon.
@@ -1183,7 +1244,11 @@ def train_model(
                     s for s in _as_series_list(val_series)
                     if len(s) > (lookback + horizon)
                 ]
-                if model_type in _PL_LIGHTNING_MODELS and _val_usable:
+                if model_type == "XGBoost":
+                    # With an eval_set the booster prints one line per round
+                    # to STDOUT, which would corrupt the MCP stdio transport.
+                    fit_kwargs["verbose"] = False
+                if model_type in _VAL_SERIES_MODELS and _val_usable:
                     fit_kwargs["val_series"] = (
                         _val_usable if len(_val_usable) > 1 else _val_usable[0]
                     )
@@ -1223,6 +1288,10 @@ def train_model(
 
     training_time = time.time() - start_time
 
+    # XGBoost: read the per-boosting-round validation curve the booster kept.
+    if model_type == "XGBoost" and loss_history is None:
+        loss_history = _extract_xgb_eval_history(model)
+
     # Evaluate on train + validation splits.  last_points_only=True (inside
     # _eval_split) yields a single concatenated TimeSeries for calculate_metrics.
     training_metrics = _eval_split(
@@ -1249,7 +1318,11 @@ def train_model(
     # callback captured at least one epoch; absent otherwise so downstream
     # consumers (report payload/JS) can hide the section gracefully.
     if loss_history and loss_history.get("epochs"):
-        training_info["training_history"] = loss_history
+        training_info["training_history"] = {
+            "x_label": "epoch",
+            "metric": "loss",
+            **loss_history,
+        }
 
     return model, training_metrics, validation_metrics, training_info
 

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ title }}</title>
+  <style>
+{{ inlined_css }}
+
+/* Training-report specific additions */
+.model-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+.model-card { border: 1px solid var(--border); border-radius: 8px; background: var(--card-bg); padding: 12px 14px; }
+.model-card h3 { margin: 0 0 6px; font-size: 1em; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.model-card .kv-grid { grid-template-columns: 1fr 1fr; gap: 6px; }
+.model-card .kv-grid .kv { padding: 6px 8px; }
+.swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: middle; }
+.pill { font-size: 0.72em; font-weight: 600; padding: 2px 8px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); }
+.pill.tuned { background: #ede9fe; color: #6d28d9; }
+.pill.best { background: #d1fae5; color: var(--good); }
+.flag { display: inline-block; margin: 3px 6px 3px 0; padding: 3px 9px; border-radius: 6px; font-size: 0.82em; background: #fef3c7; color: var(--warn); }
+.flag.bad { background: #fee2e2; color: var(--bad); }
+.flag.info { background: var(--accent-soft); color: var(--accent); }
+.toolbar { display: flex; gap: 8px; align-items: center; margin: 8px 0 10px; flex-wrap: wrap; font-size: 0.85em; color: var(--muted); }
+.toolbar button { border: 1px solid var(--border); background: var(--card-bg); color: var(--fg); border-radius: 6px; padding: 4px 10px; font-size: 0.9em; cursor: pointer; }
+.toolbar button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.curve-panel { margin-bottom: 16px; }
+.curve-panel .panel-title { font-weight: 600; margin: 0 0 4px; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.curve-panel .panel-title .sub { color: var(--muted); font-weight: 400; font-size: 0.85em; }
+table.data { border-collapse: collapse; width: 100%; font-size: 0.85em; }
+table.data th, table.data td { border-bottom: 1px solid var(--border); padding: 5px 8px; text-align: left; vertical-align: top; }
+table.data th { color: var(--muted); font-weight: 600; }
+table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.data tr.best td { background: #ecfdf5; }
+code.kw { font-size: 0.85em; background: var(--card-bg); padding: 1px 5px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <header class="report-header">
+      <h1 id="report-title">{{ title }}</h1>
+      <div class="subtitle" id="report-subtitle"></div>
+    </header>
+
+    <nav class="toc">
+      <a href="#models">Models</a>
+      <a href="#curves">Learning curves</a>
+      <a href="#metrics">Metrics</a>
+      <a href="#splits">Splits</a>
+      <a href="#tuning">Tuning</a>
+      <a href="#compute">Compute</a>
+      <a href="#flags">Findings</a>
+    </nav>
+
+    <section id="models">
+      <h2>Models</h2>
+      <div class="model-cards" id="model-cards"></div>
+    </section>
+
+    <section id="curves">
+      <h2>Learning curves</h2>
+      <div class="toolbar" id="curve-toolbar"></div>
+      <div id="curve-overlay"></div>
+      <div id="curve-panels"></div>
+    </section>
+
+    <section id="metrics">
+      <h2>Training vs validation metrics</h2>
+      <div class="chart-row">
+        <div class="chart"><h3 style="margin-top:0">CV-RMSE (%)</h3><div id="chart-cvrmse"></div></div>
+        <div class="chart"><h3 style="margin-top:0">Validation MAPE (%) — R² in tooltip and table</h3><div id="chart-mape-r2"></div></div>
+      </div>
+      <div id="metrics-table" style="margin-top:12px"></div>
+    </section>
+
+    <section id="splits">
+      <h2>Train / validation splits</h2>
+      <div id="split-panels"></div>
+    </section>
+
+    <section id="tuning">
+      <h2>Hyperparameter tuning</h2>
+      <div id="tuning-panels"></div>
+    </section>
+
+    <section id="compute">
+      <h2>Compute</h2>
+      <div class="chart-row">
+        <div class="chart"><h3 style="margin-top:0">Training time (s)</h3><div id="chart-time"></div></div>
+        <div class="chart"><h3 style="margin-top:0">Estimated energy (kWh)</h3><div id="chart-energy"></div></div>
+      </div>
+    </section>
+
+    <section id="flags">
+      <h2>Findings</h2>
+      <div id="flags-list"></div>
+    </section>
+
+    <footer class="report-footer">
+      <span id="footer-generated"></span>
+    </footer>
+  </div>
+
+  <script>
+{{ d3_js }}
+  </script>
+  <script>
+{{ plot_js }}
+  </script>
+  <script>
+window.__REPORT_DATA__ = {{ payload_json }};
+  </script>
+  <script>
+{{ charts_js }}
+  </script>
+</body>
+</html>

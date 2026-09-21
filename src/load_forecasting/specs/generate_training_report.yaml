@@ -1,0 +1,140 @@
+# Generate Training Report Specification
+# For AlphaBuilding-Agents SpecRegistry and AI discovery
+
+id: forecasting.generate_training_report
+version: "1.0.0"
+mcp_server: load_forecasting
+mcp_tool: generate_training_report
+
+category: reporting
+tags: [visualization, training, learning_curve, loss, epochs, tuning, optuna, model_comparison, html_report]
+description: >
+  Generate a self-contained HTML report on how one or more trained models
+  trained, from their saved metadata alone (no test CSV, no re-evaluation,
+  nothing retrained). Learning curves (train/validation loss per epoch for
+  LSTM/TFT/TiDE/TSMixer, validation RMSE per boosting round for XGBoost) with
+  best-point, over-training and under-training diagnostics; training vs
+  validation metrics with the overfitting check; the train/validation split
+  as drawn; compute (time, estimated energy, device); and for tune_model
+  results the Optuna study (CV-RMSE per trial, best-so-far, per-parameter
+  scatter, per-trial loss curves, top trials). Several model_ids are
+  compared side by side and ranked by validation CV-RMSE. Call it right
+  after train_forecast_model or tune_model to judge convergence before
+  spending compute on evaluation or backtesting.
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+inputs:
+  - name: model_id
+    type: string
+    required: false
+    description: A single trained model to report on (from train_forecast_model, tune_model or list_models)
+    example: "Building_33_LSTM_20260921_114850"
+
+  - name: model_ids
+    type: array
+    items: { type: string }
+    required: false
+    description: >
+      Several models to compare. Combined with model_id when both are given;
+      order is preserved and used for the "#n" tags in the page. At least
+      one of model_id / model_ids is required.
+
+  - name: output_html_path
+    type: string
+    required: false
+    description: >
+      Where to write the report. Optional -- defaults to
+      <model_id>_training_report.html (or training_report_<N>_models.html)
+      under LOAD_FORECASTING_OUTPUT_DIR/reports or <repo>/outputs/reports.
+
+  - name: title
+    type: string
+    required: false
+    description: Report title
+
+# ==============================================================================
+# OUTPUTS
+# ==============================================================================
+outputs:
+  success:
+    type: boolean
+
+  error:
+    type: string
+
+  output_html_path:
+    type: string
+    description: Absolute path of the written report
+
+  file_size_bytes: { type: integer }
+  n_models: { type: integer }
+
+  models:
+    type: array
+    description: One summary per model, in the order requested
+    items:
+      type: object
+      properties:
+        model_id: { type: string }
+        model_type: { type: string }
+        tuned: { type: boolean }
+        has_curve: { type: boolean, description: "Whether a per-epoch / per-iteration history was recorded" }
+        x_label: { type: string, enum: ["epoch", "iteration"] }
+        n_points: { type: integer }
+        best:
+          type: object
+          description: Point of lowest validation loss
+          properties:
+            x: { type: integer }
+            val: { type: number }
+        final:
+          type: object
+          properties:
+            train: { type: number }
+            val: { type: number }
+        val_train_gap_ratio: { type: number, description: "final validation loss / final training loss" }
+        validation_metrics: { type: object }
+        training_metrics: { type: object }
+        training_time_s: { type: number }
+        split_strategy: { type: string }
+        flags:
+          type: array
+          items: { type: string }
+          description: "OVERFIT / NO_CURVE / CURVE diagnostics (over-trained, still improving)"
+        tuning:
+          type: object
+          description: Present for tune_model results
+          properties:
+            n_completed: { type: integer }
+            n_failed: { type: integer }
+            best_trial: { type: integer }
+            best_cv_rmse: { type: number }
+            best_params: { type: object }
+
+  comparison:
+    type: object
+    properties:
+      basis: { type: string }
+      best_model_id: { type: string }
+      rows:
+        type: array
+        description: Models ranked by validation CV-RMSE
+      n_with_curves: { type: integer }
+      n_tuned: { type: integer }
+
+  sections:
+    type: array
+    items: { type: string }
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+notes:
+  - "Reads metadata.json only; safe to call any number of times and cheap"
+  - "Curves exist for LSTM, TFT, TiDE, TSMixer (per epoch, train + validation loss) and XGBoost (per boosting round, validation RMSE). LinearRegression, ARIMA and the naive baselines fit in one shot; TimesFM is excluded by design; models trained before curve capture existed report NO_CURVE"
+  - "The over-training diagnostic fires when the final validation loss exceeds the best by more than 5%; the under-training one when validation loss was still falling by more than 1% at the last epoch"
+  - "OVERFIT uses the same rule as train_forecast_model's ml_warnings: validation CV-RMSE more than 2x training CV-RMSE"
+  - "The overlay chart normalises each model's validation curve to its first value so models with different loss functions can be compared on convergence shape"
+  - "Every JS/CSS dependency and the data are inlined; the file opens from file:// with no network"

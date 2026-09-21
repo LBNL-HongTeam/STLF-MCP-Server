@@ -13,6 +13,8 @@ from .backtest_payload import build_backtest_payload, BacktestReportPayload
 from .inference_builder import build_inference_dashboard_html
 from .data_builder import build_data_report_html
 from .data_payload import build_data_report_payload, DataReportPayload, SPLIT_STRATEGIES
+from .training_builder import build_training_report_html
+from .training_payload import build_training_report_payload, TrainingReportPayload
 
 __all__ = [
     "build_report_html",
@@ -26,4 +28,7 @@ __all__ = [
     "build_data_report_payload",
     "DataReportPayload",
     "SPLIT_STRATEGIES",
+    "build_training_report_html",
+    "build_training_report_payload",
+    "TrainingReportPayload",
 ]

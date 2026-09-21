@@ -1,6 +1,6 @@
 # STLF-MCP-Server
 
-A Model Context Protocol (MCP) server that provides **19 tools** for
+A Model Context Protocol (MCP) server that provides **20 tools** for
 **short-term load forecasting (STLF)** of building and grid electrical demand.
 This server enables AI assistants and other MCP clients to inspect data, merge
 weather, train, tune, evaluate, backtest, and forecast electrical loads — and
@@ -53,6 +53,9 @@ and forward forecasts — as MCP tools any client can call.
   day-of-week, month) and 24/48/168h lag features are auto-injected.
 - 📈 **Rigorous evaluation**: RMSE, MAE, MAPE, CV-RMSE, R², plus peak-day
   PMAPE/PTE metrics.
+- 📉 **Training diagnostics**: per-epoch (Torch) and per-round (XGBoost)
+  learning curves recorded at training time and rendered by
+  `generate_training_report`, with convergence and overfitting checks.
 - 🔁 **Rolling-window backtesting** with h-step-ahead error degradation.
 - 🔍 **Hyperparameter tuning** via Optuna.
 - 🗂️ **Batch / multi-series** fan-out over many feeders or meters (fault
@@ -247,7 +250,7 @@ replacing the stdio command stanza with an HTTP one:
 
 ## Available Tools
 
-The server provides **19 tools** organized into **6 categories**. Full parameter
+The server provides **20 tools** organized into **6 categories**. Full parameter
 and return-shape documentation lives in each tool's function signature (FastMCP
 derives the JSON schema from it) and in the YAML specs under
 `src/load_forecasting/specs/`.
@@ -287,8 +290,13 @@ derives the JSON schema from it) and in the YAML specs under
 - `batch_generate_forecast` - Generate forward forecasts for many trained models
   in one call
 
-### 📊 Reporting (4 tools)
+### 📊 Reporting (5 tools)
 
+- `generate_training_report` - How one or more models *trained*, from saved
+  metadata alone: learning curves (per epoch for LSTM/TFT/TiDE/TSMixer, per
+  boosting round for XGBoost) with over/under-training diagnostics, training
+  vs validation metrics, the split as drawn, compute, and the Optuna study
+  for tuned models. Several `model_ids` are compared side by side
 - `generate_data_report` - Self-contained HTML *data* report, before any
   training: target and every covariate over time with the train/validation
   split drawn as coloured segments (sequential or per-season) and season
@@ -492,7 +500,7 @@ The server follows a layered architecture:
 ┌─────────────────────────┐
 │   MCP Protocol Layer    │  FastMCP server handling client communications
 ├─────────────────────────┤
-│      Tools Layer        │  19 tools organized into 6 categories
+│      Tools Layer        │  20 tools organized into 6 categories
 ├─────────────────────────┤
 │       Core Layer        │  Data loader, trainer, evaluator, model registry,
 │                         │  tuning (Optuna), weather fetcher, spec loader

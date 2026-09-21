@@ -29,6 +29,7 @@ from .tools import (
     fetch_weather_forecast,
     generate_inference_dashboard,
     generate_data_report,
+    generate_training_report,
     batch_train_forecast_models,
     batch_generate_forecast,
 )
@@ -119,6 +120,7 @@ mcp.add_tool(merge_covariates)
 mcp.add_tool(fetch_weather_forecast)
 mcp.add_tool(generate_inference_dashboard)
 mcp.add_tool(generate_data_report)
+mcp.add_tool(generate_training_report)
 mcp.add_tool(batch_train_forecast_models)
 mcp.add_tool(batch_generate_forecast)
 

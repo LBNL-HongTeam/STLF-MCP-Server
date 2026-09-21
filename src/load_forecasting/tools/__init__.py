@@ -19,6 +19,7 @@ from .reports import (
     generate_backtest_report,
     generate_inference_dashboard,
     generate_data_report,
+    generate_training_report,
 )
 from .data_prep import (
     list_models,
@@ -44,6 +45,7 @@ __all__ = [
     "generate_backtest_report",
     "generate_inference_dashboard",
     "generate_data_report",
+    "generate_training_report",
     "list_models",
     "merge_covariates",
     "fetch_weather_forecast",

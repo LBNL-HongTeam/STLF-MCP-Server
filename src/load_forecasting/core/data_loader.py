@@ -869,6 +869,7 @@ class ForecastingDataLoader:
             Tuple of (train_loader, val_loader).
         """
         split_idx = int(len(self.df) * (1 - validation_split))
+        self.last_split_strategy = "sequential"
         return (
             self._clone_with_df(self.df.iloc[:split_idx].copy()),
             self._clone_with_df(self.df.iloc[split_idx:].copy()),
@@ -962,4 +963,5 @@ class ForecastingDataLoader:
         train_df = pd.concat(train_chunks).sort_index()
         val_df = pd.concat(val_chunks).sort_index()
 
+        self.last_split_strategy = "seasonal"
         return self._clone_with_df(train_df), self._clone_with_df(val_df)

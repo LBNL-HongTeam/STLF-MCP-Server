@@ -322,6 +322,7 @@ Read back and surface to the user:
 - `data_inspection.quality_flags` / `suggestions`
 - Any `ml_warnings` — all of them, verbatim
 - **For DL models**: verify from `training_info` / logs that training actually ran on the requested accelerator (§3.5.6). If it silently fell back to CPU without §3.5.3 consent, discard the model and re-issue with the accelerator kwarg fixed. If the call errored on a GPU-related message, follow §3.5.4 — do NOT silently retry on CPU.
+- **Then call `generate_training_report(model_id=...)`** (also after §5e) and read its `models[0].flags` before evaluating: `CURVE: ... still falling` means more epochs/rounds are warranted; `CURVE: ... over-trained` means fewer (or early stopping); `OVERFIT` means the validation gap is large. Give the user the returned `output_html_path`. When comparing candidates, pass all of them as `model_ids` — the page overlays their validation curves and ranks them.
 
 ### 5e — Tune path (`tune_model`)
 
@@ -391,6 +392,7 @@ Complements §6: catches degradation over time and horizon-specific weaknesses t
 | Report | When | Tool | Output path |
 |---|---|---|---|
 | Data report | Before training, or whenever a quality flag needs judgement (are those outliers real events?) | `generate_data_report` | optional — defaults under `outputs/reports/`; returned in `output_html_path` |
+| Training report | Right after §5d / §5e, before evaluation: did it converge, over-train, overfit? Pass several `model_ids` to compare | `generate_training_report` | optional — defaults under `outputs/reports/` |
 | Evaluation report | After §6 | `generate_evaluation_report` | required, `.html`/`.htm` |
 | Backtest report | After §7 — **preferred for stakeholders** (h-step-ahead RMSE curves, playback slider) | `generate_backtest_report` | required, `.html`/`.htm` |
 | Inference dashboard | Operational forecasting with live weather refresh | `generate_inference_dashboard` (needs `latitude`/`longitude`) | required, `.html`/`.htm` |
@@ -465,6 +467,7 @@ Before declaring the task complete, verify every item:
 | `tune_model` | Optuna HP search + final fit | `csv_path`, `model_type` | `n_trials`, `search_space`, `lookback_hours`, `horizon_hours` (cap 48) | above + `best_params`, `best_cv_rmse`, `all_trial_results` |
 | `evaluate_forecast_model` | Holdout evaluation | `model_id`, `csv_path` | `column_mapping`, `include_residual_analysis`, `peak_dates`, `output_csv_path` | `test_metrics`, `comparison_to_validation`, `predictions`, `peak_metrics`, `ml_warnings` |
 | `backtest_model` | Rolling-window backtest | `model_id`, `csv_path` | `stride_hours`, `start_fraction`, `include_residual_analysis`, `peak_dates` | `backtest_metrics`, `backtest_summary`, `predictions`, `peak_metrics` |
+| `generate_training_report` | Learning curves, train-vs-val metrics, split, compute, Optuna study; compares several models | `model_id` **or** `model_ids` | `output_html_path` (optional), `title` | `models[]` (`has_curve`, `best`, `final`, `flags`, `tuning`), `comparison.best_model_id` |
 | `generate_evaluation_report` | HTML report from evaluate | `model_id`, `csv_path`, `output_html_path` | `column_mapping`, `title` | `output_html_path`, `test_metrics` |
 | `generate_backtest_report` | HTML report from backtest (richer) | `model_id`, `csv_path`, `output_html_path` | `stride_hours`, `start_fraction`, `peak_dates`, `title` | `output_html_path`, `backtest_metrics`, h-step curves |
 | `generate_inference_dashboard` | HTML forecast dashboard | `model_id`, `csv_path`, `output_html_path`, `latitude`, `longitude` | `column_mapping`, `horizon_hours` | dashboard HTML |

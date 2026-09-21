@@ -299,6 +299,25 @@ class ModelRegistry:
 
         self._save_registry(registry)
 
+    def load_metadata(self, model_id: str) -> dict:
+        """Read a model's metadata.json without unpickling the model.
+
+        Raises:
+            ModelNotFoundError: If model_id doesn't exist
+            ModelCorruptedError: If metadata.json is missing or unreadable
+        """
+        model_dir = self.base_dir / model_id
+        if not model_dir.exists():
+            raise ModelNotFoundError(f"Model not found: {model_id}")
+        metadata_path = model_dir / "metadata.json"
+        if not metadata_path.exists():
+            raise ModelCorruptedError(f"Metadata not found for model: {model_id}")
+        try:
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            raise ModelCorruptedError(f"Failed to read metadata for {model_id}: {e}")
+
     def load_model(self, model_id: str) -> tuple[Any, dict, dict]:
         """
         Load model and metadata from registry.

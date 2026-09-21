@@ -4,6 +4,7 @@ MCP tool: tune_model — Optuna hyperparameter tuning + best-model registration.
 
 from typing import Optional
 import logging
+import time
 
 from ..core.data_loader import ForecastingDataLoader, DataLoadError
 from ..core.trainer import (
@@ -15,8 +16,11 @@ from ..core.trainer import (
     _normalize_device,
     _eval_split,
     _match_covariates,
+    _make_loss_history_callback,
+    _strip_loss_history_callback,
     MIXED_COVARIATE_MODELS,
     _TORCH_MODEL_NAMES,
+    _PL_LIGHTNING_MODELS,
 )
 from ..core.tuning import DEFAULT_SEARCH_SPACES, sample_params
 from ..core.evaluator import calculate_metrics
@@ -200,6 +204,11 @@ def tune_model(
         # plus scaler fitting and full-covariate construction.
         prep = _prepare_training_series(loader, validation_split, model_type=model_type)
         train_loader = prep["train_loader"]
+        # Same provenance train_forecast_model records, so the tuned model's
+        # metadata says which dates trained and which validated.
+        data_summary["training_samples"] = len(train_loader.df)
+        data_summary["validation_samples"] = len(prep["val_loader"].df)
+        data_summary["split"] = prep["split_info"]
         train_series = prep["train_series"]
         val_series = prep["val_series"]
         train_covariates = prep["train_covariates"]
@@ -226,7 +235,19 @@ def tune_model(
             if model_type in _TORCH_MODEL_NAMES and "accelerator" not in params:
                 params["accelerator"] = resolved_device
 
+            _t0 = time.time()
+            _trial_metrics: dict = {}
+            _trial_history: Optional[dict] = None
+            _trial_model = None
             try:
+                # Per-epoch train-loss curve for Lightning models so the
+                # training report can show how each trial converged.  The
+                # callback is stripped again after fit (see trainer).
+                _create_kwargs = dict(params)
+                if model_type in _PL_LIGHTNING_MODELS:
+                    _cb, _trial_history = _make_loss_history_callback()
+                    if _cb is not None:
+                        _create_kwargs["_loss_history_callback"] = _cb
                 use_past = train_covariates is not None
                 use_future = (
                     train_future_covariates is not None
@@ -239,8 +260,9 @@ def tune_model(
                     use_past_covariates=use_past,
                     use_future_covariates=use_future,
                     frequency=frequency,
-                    **params,
+                    **_create_kwargs,
                 )
+                _trial_model = model
 
                 # GPU accelerators (mps/cuda) run in float32; cast series to
                 # float32 to avoid dtype mismatches (MPS lacks float64 support;
@@ -281,17 +303,26 @@ def tune_model(
                     lookback_steps, horizon_steps, model_type, scaler, "validation",
                 )
                 cv_rmse = metrics.get("cv_rmse") or float("inf")
+                _trial_metrics = {k: metrics.get(k) for k in ("rmse", "mae", "mape", "cv_rmse", "r_squared")}
 
             except Exception as e:
                 logger.warning(f"Trial {trial.number} failed: {e}")
                 cv_rmse = float("inf")
                 params = {}
+            finally:
+                if _trial_history is not None and _trial_model is not None:
+                    _strip_loss_history_callback(_trial_model)
 
-            trial_results.append({
+            entry = {
                 "trial": trial.number,
                 "params": params,
                 "cv_rmse": cv_rmse if cv_rmse != float("inf") else None,
-            })
+                "metrics": _trial_metrics,
+                "duration_s": round(time.time() - _t0, 2),
+            }
+            if _trial_history and _trial_history.get("epochs"):
+                entry["train_loss"] = [round(float(v), 6) for v in _trial_history["train_loss"]]
+            trial_results.append(entry)
             return cv_rmse
 
         # ------------------------------------------------------------------
@@ -346,6 +377,18 @@ def tune_model(
             "tuned": True,
             "n_trials": n_trials,
             "best_hyperparameters": best_params,
+            "device": resolved_device if model_type in _TORCH_MODEL_NAMES else None,
+        }
+        # Persist the study so generate_training_report can draw it later
+        # without re-running anything.
+        training_info["tuning"] = {
+            "n_trials": n_trials,
+            "n_trials_completed": len(trial_results),
+            "best_trial": int(study.best_trial.number),
+            "best_cv_rmse": round(best_cv_rmse, 6),
+            "best_params": best_params,
+            "search_space": effective_space,
+            "trials": trial_results,
         }
 
         model_path = _save_trained_model(

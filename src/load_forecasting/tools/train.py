@@ -18,6 +18,7 @@ from ..core.trainer import (
     _normalize_device,
     MULTI_SERIES_MODELS,
     PROBABILISTIC_MODELS,
+    _TORCH_MODEL_NAMES,
     validate_quantiles,
 )
 from ..core.frequency_utils import hours_to_steps
@@ -177,7 +178,13 @@ def _prepare_training_series(
 
     if use_chunks:
         train_loader, val_loader = loader.split_train_val_seasonal(validation_split)
-        split_strategy = "seasonal_chunked"
+        # The loader falls back to a sequential split when fewer than four
+        # seasons are present; record what actually happened.
+        if getattr(loader, "last_split_strategy", "seasonal") == "seasonal":
+            split_strategy = "seasonal_chunked"
+        else:
+            split_strategy = "sequential"
+            logger.info("Seasonal split fell back to sequential (fewer than four seasons present).")
     else:
         train_loader, val_loader = loader.split_train_val(validation_split)
         split_strategy = "sequential"
@@ -546,6 +553,7 @@ def train_forecast_model(
             # resolution, so the metadata stays serialisable and the recorded
             # value can be fed straight back into a later call.
             "model_kwargs": model_kwargs or None,
+            "device": resolved_device if model_type in _TORCH_MODEL_NAMES else None,
         }
 
         model_path = _save_trained_model(

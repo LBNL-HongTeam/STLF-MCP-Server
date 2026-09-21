@@ -771,3 +771,113 @@ def generate_data_report(
     except Exception as e:
         logger.exception("generate_data_report failed")
         return create_error_response(f"Data report generation failed: {e}")
+
+
+def generate_training_report(
+    model_id: Optional[str] = None,
+    model_ids: Optional[list] = None,
+    output_html_path: Optional[str] = None,
+    title: Optional[str] = None,
+) -> dict:
+    """
+    Generate a self-contained HTML report on how one or more models trained:
+    learning curves (train/validation loss per epoch, or per boosting round
+    for XGBoost) with best-epoch and over/under-training diagnostics, training
+    vs validation metrics with the overfitting check, the train/validation
+    split as drawn, compute (time, estimated energy, device), and -- for
+    models from tune_model -- the Optuna study (CV-RMSE per trial, best-so-far,
+    per-parameter scatter, per-trial loss curves, top trials).
+
+    Reads only the models' saved metadata: no test CSV, no re-evaluation,
+    nothing is retrained. Pass several model_ids to compare them side by side
+    (validation curves overlaid on a relative scale, metrics ranked).
+
+    Use it right after train_forecast_model or tune_model to judge whether
+    the model converged, over-trained, or overfit before spending compute on
+    evaluation or backtesting.
+
+    Args:
+        model_id: A single trained model (from train_forecast_model /
+            tune_model / list_models).
+        model_ids: Several models to compare. Combined with model_id if both
+            are given; order is preserved.
+        output_html_path: Where to write the report. Optional: defaults to
+            <model_id>_training_report.html (or training_report_<N>_models.html)
+            under LOAD_FORECASTING_OUTPUT_DIR/reports or <repo>/outputs/reports.
+        title: Report title.
+
+    Returns:
+        Dict with output_html_path, per-model summaries (curve presence,
+        best epoch, final losses, validation metrics, flags, tuning summary),
+        and a comparison ranked by validation CV-RMSE.
+    """
+    try:
+        from ..reporting import build_training_report_payload, build_training_report_html
+
+        ids: list = []
+        if model_id:
+            ids.append(model_id)
+        for m in (model_ids or []):
+            if m and m not in ids:
+                ids.append(m)
+        if not ids:
+            return create_error_response("Provide model_id or a non-empty model_ids list.")
+
+        registry = ModelRegistry()
+        loaded: list = []
+        for mid in ids:
+            try:
+                loaded.append((mid, registry.load_metadata(mid)))
+            except ModelNotFoundError:
+                return create_error_response(f"Model not found: {mid}. Use list_models to see available model_ids.")
+            except ModelCorruptedError as e:
+                return create_error_response(str(e))
+
+        if not output_html_path:
+            from ..core.paths import default_output_dir
+            stem = ids[0] if len(ids) == 1 else f"training_report_{len(ids)}_models"
+            output_html_path = str(default_output_dir() / "reports" / f"{stem}_training_report.html")
+        err = _validate_html_output_path(output_html_path)
+        if err:
+            return create_error_response(err)
+        out_path = Path(output_html_path)
+
+        payload = build_training_report_payload(loaded, title=title)
+        out_path.write_text(build_training_report_html(payload), encoding="utf-8")
+
+        summaries = []
+        for b in payload.models:
+            c = b["curve"]
+            summaries.append(
+                {
+                    "model_id": b["model_id"],
+                    "model_type": b["model_type"],
+                    "tuned": b["config"]["tuned"],
+                    "has_curve": c is not None,
+                    "x_label": c["x_label"] if c else None,
+                    "n_points": c["n_points"] if c else None,
+                    "best": c["best"] if c else None,
+                    "final": c["final"] if c else None,
+                    "val_train_gap_ratio": c["gap_ratio"] if c else None,
+                    "validation_metrics": b["metrics"]["validation"],
+                    "training_metrics": b["metrics"]["training"],
+                    "training_time_s": b["training"]["time_s"],
+                    "split_strategy": b["split"]["strategy"],
+                    "flags": b["flags"],
+                    "tuning": (
+                        {k: b["tuning"][k] for k in ("n_completed", "n_failed", "best_trial", "best_cv_rmse", "best_params")}
+                        if b["tuning"] else None
+                    ),
+                }
+            )
+        return create_success_response(
+            output_html_path=str(out_path.resolve()),
+            file_size_bytes=int(out_path.stat().st_size),
+            n_models=len(summaries),
+            models=summaries,
+            comparison=payload.comparison,
+            sections=["models", "learning curves", "metrics", "splits", "tuning", "compute", "findings"],
+        )
+    except Exception as e:
+        logger.exception("generate_training_report failed")
+        return create_error_response(f"Training report generation failed: {e}")
