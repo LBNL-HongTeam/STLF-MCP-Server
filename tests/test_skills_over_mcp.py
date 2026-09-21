@@ -238,3 +238,60 @@ def test_skill_resources_and_instructions():
     text = mcp.instructions or ""
     assert "list_skills" in text and "get_skill" in text and BUNDLED in text
     assert "skill://index.json" in text
+
+
+# ---------------------------------------------------------------------------
+# The real bundle: two skills, and supporting files served both ways
+# ---------------------------------------------------------------------------
+
+EXPLORE = "explore-load-data"
+HP_REF = "references/hyperparameter-reference.md"
+MERGE_REF = "references/multi-csv-merge-protocol.md"
+
+
+def test_bundle_has_both_skills_with_descriptions():
+    r = list_skills()
+    by_name = {s["name"]: s for s in r["skills"]}
+    assert {BUNDLED, EXPLORE} <= set(by_name)
+    for name in (BUNDLED, EXPLORE):
+        assert by_name[name]["description"].startswith("Use when"), name
+        assert len(by_name[name]["sections"]) >= 5, name
+    assert by_name[BUNDLED]["supporting_files"] == [HP_REF, MERGE_REF]
+    assert by_name[EXPLORE]["supporting_files"] == []
+
+
+def test_training_skill_supporting_files_via_tool():
+    hp = get_skill(BUNDLED, file=HP_REF)
+    assert hp["success"] is True and hp["filename"] == HP_REF
+    assert "XGBoost" in hp["content"] and "n_epochs" in hp["content"]
+    merge = get_skill(BUNDLED, file=MERGE_REF)
+    assert merge["success"] is True
+    assert "2.5.4" in merge["content"]          # subsection numbering preserved for cross-refs
+    # The main skill points at both files instead of inlining them.
+    body = get_skill(BUNDLED)["content"]
+    assert HP_REF in body and MERGE_REF in body
+    assert "### 2.5.4" not in body
+
+
+def test_explore_skill_points_at_data_tools_and_hands_off():
+    body = get_skill(EXPLORE)["content"]
+    for tool in ("list_datasets", "inspect_data", "generate_data_report"):
+        assert f"`{tool}`" in body or f"`{tool}(" in body, tool
+    assert BUNDLED in body                      # hand-off to the training skill
+    for key in ("future_covariate_candidates", "target_excluded", "categorical_code_columns", "split_strategy"):
+        assert key in body, key
+
+
+def test_supporting_file_resource_matches_tool():
+    from fastmcp import Client
+    from load_forecasting.server import mcp
+
+    async def go():
+        async with Client(mcp) as c:
+            res = (await c.read_resource(f"skill://{BUNDLED}/files/{HP_REF}"))[0].text
+            index = json.loads((await c.read_resource("skill://index.json"))[0].text)
+            return res, {s["name"] for s in index["skills"]}
+
+    res, names = _run(go())
+    assert res == get_skill(BUNDLED, file=HP_REF)["content"]
+    assert {BUNDLED, EXPLORE} <= names

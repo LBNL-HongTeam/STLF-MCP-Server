@@ -552,11 +552,18 @@ the open [Agent Skills](https://agentskills.io) format: each skill is a
 directory with a `SKILL.md` (YAML front matter `name` and `description`,
 then the workflow) plus optional supporting files.
 
-`skills/train-forecast-model/SKILL.md` guides an agent through the recommended
-list-datasets → inspect → merge → train → evaluate → backtest → report sequence
-using this server's MCP tools, with hard-stop gates (timezone confirmation,
-GPU consent, hyperparameter decisions) the agent must clear with the user. It
-does not implement forecasting logic; the Python tools remain authoritative.
+Two skills ship today:
+
+| Skill | Use when | Tools it sequences |
+|---|---|---|
+| `explore-load-data` | The user wants to *look at* a dataset without training: what data exists, plot it, check quality, see how the train/validation (seasonal) split would fall, which columns are weather | `list_datasets` → `inspect_data` → `generate_data_report`, then hands off |
+| `train-forecast-model` | Build, train, tune, evaluate, backtest or report a model, including one model per feeder across a wide CSV | inspect → (merge) → train / tune → evaluate → backtest → report, with hard-stop gates (timezone confirmation, GPU consent, hyperparameter decisions) |
+
+`train-forecast-model` keeps its long reference material in supporting files
+that load only when needed — `references/multi-csv-merge-protocol.md` (the
+ten-step merge procedure) and `references/hyperparameter-reference.md` (per-
+model tables). Skills do not implement forecasting logic; the Python tools
+remain authoritative.
 
 ### How agents get the skill
 
@@ -570,7 +577,8 @@ working directory is this repository:
 | **User-level install** | A Codex/Claude Code user who wants the skill in every session | Symlink or copy `skills/train-forecast-model` into `~/.agents/skills/` (Codex) or `~/.claude/skills/` (Claude Code). |
 
 `get_skill` accepts `section="Section 3"` (any heading substring) to fetch
-part of a long skill, and `file="references/x.md"` for supporting files. The
+part of a long skill, and `file="references/hyperparameter-reference.md"` for
+supporting files. The
 `skill://` resources follow the interim shape recommended by the MCP
 *Skills Over MCP* working group, so they map directly onto the proposed
 `skills/list` / `skills/activate` primitives once those land.

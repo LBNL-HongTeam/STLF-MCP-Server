@@ -1,6 +1,6 @@
 ---
 name: train-forecast-model
-description: Use when the user wants to build, train, tune, evaluate, backtest, or benchmark an electrical load forecasting model on this STLF-MCP-Server project. Triggers on requests mentioning load forecasting, kWh/kW prediction, training a model on AMI/meter/building data, tuning hyperparameters with Optuna, backtesting, peak-day metrics, merging weather with load, or comparing algorithms (LinearRegression, XGBoost, LSTM, ARIMA, TFT, TiDE, TSMixer, TimesFM). Enforces the inspect -> (merge) -> train -> evaluate -> backtest -> report workflow using the STLF-MCP-Server MCP tools.
+description: Use when the user wants to build, train, tune, evaluate, backtest, or benchmark an electrical load forecasting model on this STLF-MCP-Server project. Triggers on requests mentioning load forecasting, kWh/kW prediction, training a model on AMI/meter/building data, tuning hyperparameters with Optuna, backtesting, peak-day metrics, merging weather with load, comparing algorithms (LinearRegression, XGBoost, LSTM, ARIMA, TFT, TiDE, TSMixer, TimesFM), or training one model per feeder/meter across a wide CSV. Enforces the inspect -> (merge) -> train -> evaluate -> backtest -> report workflow using the STLF-MCP-Server MCP tools. For looking at a dataset without training (what data do we have, plot it, check quality, view the split) use the explore-load-data skill instead.
 ---
 
 # train-forecast-model
@@ -100,134 +100,22 @@ Now proceed to §3 (model selection).
 
 ## Section 2.5 — Multi-CSV merge workflow (N ≥ 2 input files)
 
-`merge_covariates` accepts exactly one primary + one covariate CSV per call. For N ≥ 3 files, orchestrate N-1 sequential pairwise merges. Do NOT try to feed multiple CSVs directly to `train_forecast_model` — it only accepts one.
+`merge_covariates` accepts exactly one primary + one covariate CSV per call; for N ≥ 3 files orchestrate N-1 sequential pairwise merges. `train_forecast_model` accepts one CSV only.
 
-**Do not manually pre-generate `cal_hour`, `cal_dow`, `cal_month`, `cal_is_weekend`, `cal_hour_sin/cos`, `cal_dow_sin/cos`, `cal_month_sin/cos`, `lag_24h`, `lag_48h`, or `lag_168h`.** `ForecastingDataLoader` injects all of these automatically as past covariates during `train_forecast_model` / `tune_model` / `evaluate_forecast_model`. Duplicating them wastes columns and, for lag features, risks temporal-leakage bugs.
+**When two or more input files are involved, load the full protocol before doing anything else** — it is a ten-step, hard-gated procedure and is not summarised here:
 
-### 2.5.0 — Enumerate and classify every input file
+- over MCP: `get_skill(name="train-forecast-model", file="references/multi-csv-merge-protocol.md")`
+- from a checkout: read `references/multi-csv-merge-protocol.md` next to this file
 
-Ask the user to identify each CSV's role. Exactly one must be the primary. Refuse to proceed if the primary is ambiguous or missing.
+Subsections §2.5.0–§2.5.10 cited elsewhere in this skill (e.g. §1.0 → §2.5.4) live in that file under the same numbers.
 
-| Role | Description | Example |
-|---|---|---|
-| **Primary (load)** | Contains the target column. Exactly one. | building AMI meter data |
-| **Historical covariate** | Time-aligned features covering the training period. | historical weather, historical occupancy |
-| **Forecast covariate** | Features known at forecast time; used as `future_covariates`. | Open-Meteo weather forecast |
-| **Static / calendar** | Time-indexed flag columns. | `is_holiday` calendar |
+Non-negotiables that apply even before the protocol is loaded:
 
-### 2.5.1 — Pre-merge inspection of EVERY file
-
-Run `inspect_data` on each CSV independently. For each file, record: `frequency.inferred`, `time_range.start`, `time_range.end`, `time_range.n_duplicates_removed`, `columns.all_columns`, `gaps.n_gaps`, `quality_flags`. Present the per-file summary to the user.
-
-### 2.5.2 — Column-name collision check across ALL files
-
-Cross-reference every non-datetime column name across all N files. If any column name appears in ≥2 files (e.g., two files both have `temperature`), hard-stop. `pandas.merge` will silently suffix them `_x` / `_y` and the auto-detect patterns will pick the wrong one.
-
-Resolution: ask the user to either (a) rename the column in one file before proceeding, or (b) pass an explicit `covariate_columns=[...]` subset on the merge call that excludes the colliding name from one side.
-
-### 2.5.3 — Determine common frequency
-
-- Default target cadence: the **finest** cadence among all files (e.g., load 15-min + weather 1-h → target = 15-min; hourly weather ffills across 15-min rows).
-- If any covariate is **coarser** than the load file: warn — coarse covariate values will be forward-filled across finer load rows.
-- If any covariate is **finer** than the load file: **hard-stop**. `merge_covariates` LEFT-JOINs on exact timestamp match; sub-load-cadence rows are silently dropped. The user must aggregate that file to the load cadence outside MCP before merging.
-
-### 2.5.4 — Timezone confirmation for every file
-
-Ask the user for the timezone of every file independently — **never guess or infer it** from the filename, column values, offset suffixes, or the data source's presumed location (see §1.0). If the timezone of any file has not been explicitly stated by the user, STOP and ask before merging. Build a per-file table. Any file NOT in the load timezone will require `covariate_timezone=<file-tz>` + `load_timezone=<load-tz>` on its merge call.
-
-Decision matrix per-file:
-
-| Load tz | Covariate tz | Action |
-|---|---|---|
-| Same, both naive | Same, both naive | Merge without tz params. |
-| Different (any combination) | | Pass `covariate_timezone=<cov-tz>`, `load_timezone=<load-tz>`. Tool converts + handles DST fall-back dedup. |
-| Either is tz-aware in the CSV | | Hard-stop. `merge_covariates` cannot merge tz-aware timestamps (raises "Already tz-aware"). User must strip tz info first. |
-| Load naive, Open-Meteo weather CSV | | Standard: `covariate_timezone="UTC"`, `load_timezone=<user's local tz>`. |
-
-### 2.5.5 — Global overlap check across ALL files
-
-Compute:
-
-- `overlap_start = max(file.start for file in all_files)`
-- `overlap_end = min(file.end for file in all_files)`
-- `overlap_fraction = (overlap_end - overlap_start) / (load.end - load.start)`
-
-Thresholds:
-
-- `overlap_fraction < 0.95` → warn. Significant portions of the load timeline will be ffill/bfill-imputed from stale covariate values.
-- Any covariate `start > load.start` → early load rows will be bfilled with a constant future value; consider truncating load to `overlap_start`.
-- Any covariate `end < load.end` → late load rows ffilled indefinitely with the last covariate value; consider truncating load to `overlap_end`.
-
-### 2.5.6 — Pre-flight duplicate check
-
-If any file's `time_range.n_duplicates_removed > 0`, hard-stop. `merge_covariates` does NOT dedup the load side; load-side duplicates cause row-multiplication in the LEFT JOIN. `inspect_data`'s dedup is a report, not a fix. User must clean externally.
-
-### 2.5.7 — Merge order and naming strategy
-
-Sequential pairwise merges. Recommended order:
-
-1. Start with the **primary load CSV** as the current base.
-2. Merge covariates from **longest coverage → shortest coverage**. Rationale: keeps ffill artifacts from the most-truncated covariate isolated at the end where diagnostics are easiest to read.
-3. Merge same-timezone-as-load files first; tz-converted files last (per-merge tz diagnostics stay clean).
-
-Intermediate file naming (do NOT overwrite originals):
-
-```
-load.csv + weather.csv                           -> load__weather.csv
-load__weather.csv + occupancy.csv                -> load__weather__occupancy.csv
-load__weather__occupancy.csv + holidays.csv      -> merged_final.csv
-```
-
-Write intermediates to a temp directory or alongside the final output.
-
-### 2.5.8 — Per-merge verification (repeat for every pairwise call)
-
-After each `merge_covariates` call:
-
-| Check | Threshold | Action |
-|---|---|---|
-| `n_missing_filled / n_rows` | > 5 % | Warn, continue, flag in cumulative summary. |
-| `n_missing_filled / n_rows` | > 20 % | **Hard-stop.** Do not proceed to next merge. Report which covariate caused it. Fix coverage and re-run. |
-| `dst_duplicates_dropped` | > 4 per year of data span | Warn: unusually high; tz spec may be wrong. |
-| `dst_duplicates_dropped` == 0 AND tz conversion was requested AND data spans a DST transition | | Warn: expected ≥1. TZ setup may not be doing what the user thinks. |
-| `n_rows` returned | ≠ current base row count | **Hard-stop.** Base had duplicate timestamps (should have been caught by 2.5.6). |
-| `covariate_columns` returned | doesn't match requested subset | Warn: auto-detection picked the wrong columns. |
-
-Always pass **explicit** `load_datetime_col`, `covariate_datetime_col`, and `covariate_columns` on every merge call. Never rely on substring auto-detection in a multi-CSV workflow — it picks columns like `end_time` / `update_time` before the real datetime column.
-
-### 2.5.9 — Cumulative post-merge report
-
-After all N-1 merges succeed, present a consolidated table to the user:
-
-| Covariate file | Columns added | n_missing_filled | % filled | dst_duplicates_dropped | Tz conversion |
-|---|---|---|---|---|---|
-| weather.csv | temperature, humidity | 12 | 0.1 % | 1 | UTC → America/LA |
-| occupancy.csv | occupancy_pct | 340 | 3.2 % | 0 | — |
-| holidays.csv | is_holiday | 0 | 0.0 % | 0 | — |
-
-### 2.5.10 — Final `inspect_data` on the fully merged file
-
-Non-negotiable. Run `inspect_data` on `merged_final.csv`. Verify:
-
-- `ready_to_train == True`
-- All expected covariate columns present under `columns.past_covariates` or `columns.unrecognised`
-- No `_x` / `_y` suffixed columns (collision-free merge confirmed)
-- Apply the §2a data-length check and §2b seasonal-split awareness on the merged span
-
-Now proceed to §3.
-
-### Known limitations of `merge_covariates`
-
-- Pairwise-only tool — for N ≥ 3 files, orchestrate N-1 sequential calls.
-- No cross-file collision detection — same column name in two files silently gets `_x`/`_y` suffixes.
-- No sub-load-cadence aggregation — finer-cadence covariate files must be aggregated externally.
-- No resampling of any kind — coarse covariates get ffill'd across finer load rows silently.
-- No sort — unsorted inputs produce garbage ffill.
-- No load-side dedup — load duplicates cause row-multiplication.
-- Coverage report is a single `n_missing_filled` scalar — conflates "1 row missing" with "3 months missing".
-- Substring auto-detection of datetime column picks the first-matching column in file order.
-- Cannot merge tz-aware timestamps — fails with a generic error.
-- `covariate_columns=None` includes every non-datetime column, including junk.
+1. Exactly one file is the primary (holds the target). Refuse to proceed if it is ambiguous.
+2. The §1.0 timezone gate applies to **every** file separately; `merge_covariates` can convert (`covariate_timezone` + `load_timezone`) but never infer.
+3. Never pre-generate `cal_*` or `lag_*` columns — the loader injects them; duplicates waste columns and lag duplicates risk leakage.
+4. `inspect_data` every file first; any `time_range.n_duplicates_removed > 0` on the load side is a hard stop (the LEFT JOIN would multiply rows).
+5. Finish with `inspect_data` (and, if the user wants to see it, `generate_data_report`) on the fully merged file before training.
 
 ---
 
@@ -345,80 +233,12 @@ Never silently accept the framework's default hyperparameters. Deep-learning and
 
 ### 3.6.1 — Per-model hyperparameter reference
 
-Show ONLY the table for the model the user actually selected. All Torch models (LSTM/TFT/TiDE/TSMixer/TimesFM/TimesFM+Residual) additionally accept advanced passthroughs (`batch_size`, `optimizer_kwargs`, `lr_scheduler_cls`, `lr_scheduler_kwargs`, `random_state`, `use_reversible_instance_norm`, `precision`) — mention these exist but only enumerate on request.
+The per-model tables (name, default, one-line meaning, plus the Torch passthroughs) live in a supporting file so they are loaded only when needed:
 
-**XGBoost** (defaults per Li et al. 2025 Table A.3; lr/subsample/colsample fall back to XGBoost library defaults)
+- over MCP: `get_skill(name="train-forecast-model", file="references/hyperparameter-reference.md")`
+- from a checkout: read `references/hyperparameter-reference.md` next to this file
 
-| HP | Default | What it does |
-|---|---|---|
-| `n_estimators` | 40 | Number of boosting trees; more = higher capacity, slower, more overfit risk. |
-| `max_depth` | 6 | Max depth per tree; deeper captures more interactions but overfits sooner. |
-| `learning_rate` | 0.3 (lib) | Shrinkage per tree; lower needs more trees but generalizes better. |
-| `subsample` | 1.0 (lib) | Row fraction sampled per tree; <1 adds regularization. |
-| `colsample_bytree` | 1.0 (lib) | Feature fraction sampled per tree; <1 adds regularization. |
-| `booster` | gbtree | Base learner type (`gbtree` / `gblinear` / `dart`). |
-
-**ARIMA** (ignores `lookback_hours` — order `p` plays that role)
-
-| HP | Default | What it does |
-|---|---|---|
-| `p` | 1 | Autoregressive order; how many past values feed the linear model. |
-| `d` | 1 | Differencing order to remove trend / achieve stationarity. |
-| `q` | 0 | Moving-average order; how many past forecast errors are modeled. |
-| `seasonal_order` | (0,0,0,0) | Seasonal `(P,D,Q,m)`; set `m` to the seasonal period (e.g. 24) to model daily cycles. |
-
-**LSTM (BlockRNNModel)** — past-covariate only
-
-| HP | Default | What it does |
-|---|---|---|
-| `n_epochs` | 20 | Full passes over training data; too few underfits, too many overfits. |
-| `hidden_dim` | 64 | Size of the LSTM hidden state; larger = more capacity, slower, more overfit risk. |
-| `n_rnn_layers` | 2 | Stacked LSTM layers; more layers capture deeper temporal structure but train slower. |
-| `dropout` | 0.1 | Fraction of units randomly zeroed for regularization (only active with ≥2 layers; see MPS caveat §3.5.5). |
-
-**TFT (TFTModel)**
-
-| HP | Default | What it does |
-|---|---|---|
-| `n_epochs` | 20 | Training passes over the data. |
-| `hidden_size` | 16 | Width of the model's internal representation; main capacity knob. |
-| `lstm_layers` | 1 | LSTM encoder/decoder layers inside the TFT. |
-| `num_attention_heads` | 4 | Parallel attention heads; more heads model more feature interactions. |
-| `dropout` | 0.1 | Regularization strength (see MPS NaN caveat §3.5.5). |
-
-**TiDE (TiDEModel)** — defaults per Li et al. 2025 Table A.3
-
-| HP | Default | What it does |
-|---|---|---|
-| `n_epochs` | 20 | Training passes (paper uses up to 50 with early stopping). |
-| `hidden_size` | 128 | Width of encoder/decoder MLP blocks; main capacity knob. |
-| `num_encoder_layers` | 1 | Depth of the encoder MLP stack. |
-| `num_decoder_layers` | 1 | Depth of the decoder MLP stack. |
-| `decoder_output_dim` | 16 | Per-step decoder output width before final projection. |
-| `temporal_width_past` | 4 | Dim of the learned projection for past covariates. |
-| `temporal_width_future` | 4 | Dim of the learned projection for future covariates. |
-| `dropout` | 0.1 | Regularization strength. |
-
-**TSMixer (TSMixerModel)** — defaults per Li et al. 2025 Table A.3
-
-| HP | Default | What it does |
-|---|---|---|
-| `n_epochs` | 20 | Training passes (paper uses up to 50 with early stopping). |
-| `hidden_size` | 64 | Feature-mixing hidden width; main capacity knob. |
-| `ff_size` | 64 | Feed-forward width inside each mixer block. |
-| `num_blocks` | 2 | Stacked time/feature mixer blocks; more = deeper, slower. |
-| `activation` | ReLU | Nonlinearity used in the mixer blocks. |
-| `dropout` | 0.1 | Regularization strength. |
-| `norm_type` | LayerNorm | Normalization layer type inside blocks. |
-
-**TimesFM / TimesFM+Residual** (foundation model; ~800 MB weights auto-downloaded on first use)
-
-| HP | Default | What it does |
-|---|---|---|
-| `n_epochs` | 5 | Light fine-tuning passes on your data; set `0` for pure zero-shot. |
-| `enable_finetuning` | true (n_epochs>0) | Whether to fine-tune the pretrained backbone at all; `False` = zero-shot. |
-| `local_dir` | none | Path to pre-cached weights to skip the HuggingFace download. |
-| *(TimesFM+Residual)* Ridge residual | internal | Ridge regressor on covariates corrects the target-only TimesFM output; not exposed as a simple scalar. |
+Show ONLY the table for the model the user actually selected, then continue with §3.6.2.
 
 ### 3.6.2 — Decision prompt (surface verbatim, parameterized per model)
 
@@ -432,12 +252,6 @@ Show ONLY the table for the model the user actually selected. All Torch models (
 
 ---
 
-## Section 4 — Deprecated
-
-(Section number preserved for historical reasons; content moved into §5.)
-
----
-
 ## Section 5 — Train vs Tune (user-directed)
 
 ### 5a — Covariate confirmation gate (mandatory before any train/tune call)
@@ -445,7 +259,15 @@ Show ONLY the table for the model the user actually selected. All Torch models (
 Trigger: user chose a model in the covariate-supporting set:
 `{LinearRegression, XGBoost, LSTM, ARIMA, TFT, TiDE, TSMixer, TimesFM+Residual}`.
 
-Inspect the merged file's (or single file's) auto-detected `columns.past_covariates` and any explicit `column_mapping.future_covariates`. If **no weather-derived column** is present (patterns: `temp`, `temperature`, `rh`, `humidity`, `solar`, `wind`):
+Read the `columns` block of the latest `inspect_data` result for the file that will be trained on:
+
+- `columns.past_covariates` — what auto-detection mapped. The recognised weather/occupancy name patterns are listed in the README ("Column Auto-Detection") and in `train_forecast_model.yaml`; do not maintain your own list.
+- `columns.unrecognised` — numeric columns that were **not** mapped. If any looks like a driver (weather, occupancy, production), propose adding it via `column_mapping.past_covariates` before training.
+- `columns.future_covariate_candidates` — columns known ahead of time (holidays, schedules, prior forecasts). Auto-detection never assigns these; they only count if the user passes `column_mapping.future_covariates`.
+- `columns.target_excluded` — columns skipped as target candidates because they look like forecasts or generation. Confirm the chosen `columns.target` is really the load.
+- `columns.categorical_code_columns` — nominal codes (e.g. `weather_code`); never use as linear covariates.
+
+If, after that review, **no weather-derived column** is mapped:
 
 > "You selected {model_type}, which is designed to exploit exogenous covariates. Weather is by far the strongest predictor of building load. No weather columns were detected. Training a covariate-capable model on target-only data typically produces marginal or no gains over LinearRegression and wastes compute (especially for LSTM/TFT/TiDE/TSMixer). Strongly recommended: provide weather data via `merge_covariates` (historical) or `fetch_weather_forecast` + merge (for inference). Do you want to (a) proceed anyway, (b) pause and add weather data, or (c) fall back to a naive baseline?"
 
@@ -521,6 +343,12 @@ Read back same fields as 5d (including the §3.5.6 accelerator-verification step
 
 ---
 
+### 5f — Many series at once (wide CSV of feeders / meters)
+
+When one CSV holds many target columns (e.g. `2021_substation_level.csv`: one column per substation), do not loop `train_forecast_model` by hand. Use `batch_train_forecast_models` with `csv_path` + `target_columns` (+ `shared_past_covariates` / `shared_future_covariates`, `datetime_col`) or an explicit `jobs` list; it trains one model per series, is fault tolerant (`continue_on_error`, default true), and returns per-series `model_id`s and metrics. Every gate in §1–§5 still applies **once** to the shared configuration (timezone, frequency, model choice, covariate confirmation, hyperparameters). Forward forecasts for the whole fleet come from `batch_generate_forecast` with the returned `model_id`s.
+
+---
+
 ## Section 6 — Mandatory `evaluate_forecast_model` on independent holdout
 
 Do NOT declare training successful without an out-of-sample evaluation.
@@ -560,9 +388,14 @@ Complements §6: catches degradation over time and horizon-specific weaknesses t
 
 ## Section 8 — Reports
 
-Prefer `generate_backtest_report` over `generate_evaluation_report` for stakeholder-facing output — the backtest report includes h-step-ahead RMSE curves and richer diagnostics.
+| Report | When | Tool | Output path |
+|---|---|---|---|
+| Data report | Before training, or whenever a quality flag needs judgement (are those outliers real events?) | `generate_data_report` | optional — defaults under `outputs/reports/`; returned in `output_html_path` |
+| Evaluation report | After §6 | `generate_evaluation_report` | required, `.html`/`.htm` |
+| Backtest report | After §7 — **preferred for stakeholders** (h-step-ahead RMSE curves, playback slider) | `generate_backtest_report` | required, `.html`/`.htm` |
+| Inference dashboard | Operational forecasting with live weather refresh | `generate_inference_dashboard` (needs `latitude`/`longitude`) | required, `.html`/`.htm` |
 
-Both require `output_html_path` ending in `.html` or `.htm`.
+Every report is a single self-contained HTML file (all JS/CSS inlined; opens from `file://`). Always tell the user the returned absolute path. The data report draws the same train/validation split the trainer records in `data_info.split.segments`, so a question about the seasonal split is answered by its split timeline.
 
 ---
 
@@ -625,7 +458,7 @@ Before declaring the task complete, verify every item:
 |---|---|---|---|---|
 | `list_datasets` | Enumerate available CSV/Parquet files with absolute paths | — | `directory`, `recursive`, `include_stats`, `limit` | `datasets[].path`, `rows`, `columns`, `frequency`, `start`/`end` |
 | `generate_data_report` | Visual EDA: series + covariates with the train/validation split (seasonal or sequential), season bands, gaps/outliers, load profiles, day×hour heatmap, covariate relationships | `csv_path` | `output_html_path` (optional), `split_strategy`, `validation_split`, `covariates`, `column_mapping` | `output_html_path`, `split.segments`, `unmapped_covariates`, `ready_to_train` |
-| `inspect_data` | EDA + validation pre-flight | `csv_path` | `column_mapping`, `frequency` | `ready_to_train`, `blocking_issues`, `quality_flags`, `columns`, `time_range`, `frequency` |
+| `inspect_data` | EDA + validation pre-flight | `csv_path` | `column_mapping`, `frequency` | `ready_to_train`, `blocking_issues`, `quality_flags`, `columns` (incl. `unrecognised`, `future_covariate_candidates`, `target_excluded`, `categorical_code_columns`), `time_range`, `frequency` |
 | `merge_covariates` | Pairwise LEFT-JOIN load + covariate CSV | `load_csv_path`, `covariate_csv_path`, `output_csv_path` | `load_datetime_col`, `covariate_datetime_col`, `covariate_columns`, `covariate_timezone`, `load_timezone` | `n_rows`, `covariate_columns`, `n_missing_filled`, `dst_duplicates_dropped`, `timezone_conversion` |
 | `fetch_weather_forecast` | Pull Open-Meteo weather | `latitude`, `longitude` | `forecast_hours`, `past_hours`, `timezone`, `variables`/`preset`, `resolution` | weather rows + optional CSV write |
 | `train_forecast_model` | Single-fit training | `csv_path` | `model_type`, `lookback_hours`, `horizon_hours`, `frequency`, `validation_split`, `building_name`, `column_mapping`, `augment_weather_noise` | `model_id`, `model_path`, `training_metrics`, `validation_metrics`, `data_summary`, `training_info`, `ml_warnings` |
@@ -636,5 +469,7 @@ Before declaring the task complete, verify every item:
 | `generate_backtest_report` | HTML report from backtest (richer) | `model_id`, `csv_path`, `output_html_path` | `stride_hours`, `start_fraction`, `peak_dates`, `title` | `output_html_path`, `backtest_metrics`, h-step curves |
 | `generate_inference_dashboard` | HTML forecast dashboard | `model_id`, `csv_path`, `output_html_path`, `latitude`, `longitude` | `column_mapping`, `horizon_hours` | dashboard HTML |
 | `generate_forecast` | One-shot forward inference | `model_id`, `csv_path` | `column_mapping`, `horizon_hours`, `output_csv_path` | `predictions`, `forecast_start/end`, `context_summary` |
+| `batch_train_forecast_models` | One model per series across a wide CSV or job list | `csv_path`+`target_columns` **or** `jobs` | `shared_past_covariates`, `shared_future_covariates`, `datetime_col`, `model_type`, `lookback_hours`, `horizon_hours`, `probabilistic`, `device`, `continue_on_error` | per-series `model_id`, metrics, failures |
+| `batch_generate_forecast` | Forward forecasts for many trained models | `jobs` (list of `{model_id, csv_path}`) | `horizon_hours`, `num_samples`, `output_dir`, `continue_on_error` | per-model `predictions`, failures |
 | `list_models` | Query the model registry | — | `building_name`, `model_type`, `sort_by`, `limit` | `models[]` incl. `csv_path`, `target_column`, `frequency` (what each model was trained on), `total_count` |
 | `get_algorithm_specifications` | Return all YAML specs | — | — | `specs`, `count` |
