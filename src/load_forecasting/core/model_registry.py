@@ -11,13 +11,56 @@ Provides:
 import json
 import pickle
 import importlib.metadata
+import shutil
+import sys
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Any
 import logging
 import os
 
+from darts.models import (
+    RegressionModel,
+    NaiveMean,
+    NaiveSeasonal,
+    NaiveMovingAverage,
+    XGBModel,
+    BlockRNNModel,
+    ARIMA,
+    TFTModel,
+    TiDEModel,
+    TSMixerModel,
+)
+
+# TimesFM 2.5 is optional — import guarded so this module still loads if the
+# wrapper is missing (e.g. older darts versions without huggingface_hub).
+try:
+    from darts.models.forecasting.timesfm2p5_model import TimesFM2p5Model
+    _HAS_TIMESFM = True
+except Exception:  # pragma: no cover - import guard
+    TimesFM2p5Model = None  # type: ignore[assignment]
+    _HAS_TIMESFM = False
+
+# Hybrid class always importable locally; ImportError from TimesFM only fires
+# at instantiation/load time inside the class.
+from .hybrid_timesfm import TimesFMResidualHybrid
+
 logger = logging.getLogger(__name__)
+
+# Version strings are constant for the lifetime of the process — cache them once.
+try:
+    _DARTS_VERSION: str = importlib.metadata.version("darts")
+except Exception:
+    _DARTS_VERSION = "unknown"
+
+try:
+    _PKG_VERSION: str = importlib.metadata.version("load-forecasting-mcp")
+except Exception:
+    _PKG_VERSION = "0.1.0"
+
+_PYTHON_VERSION: str = (
+    f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+)
 
 
 class ModelNotFoundError(Exception):
@@ -40,6 +83,10 @@ class ModelCorruptedError(Exception):
 
 class ModelRegistry:
     """Registry for trained forecasting models."""
+
+    # In-memory cache keyed by registry file path so that multiple registries
+    # pointing to different base_dirs don't share state (important for tests).
+    _registry_cache: dict[str, dict] = {}
 
     def __init__(self, base_dir: Optional[str] = None):
         """
@@ -70,18 +117,27 @@ class ModelRegistry:
         self._save_registry(registry)
 
     def _load_registry(self) -> dict:
-        """Load registry from disk."""
+        """Load registry from disk (or return in-memory cache for this path)."""
+        cache_key = str(self.registry_path)
+        if cache_key in ModelRegistry._registry_cache:
+            return ModelRegistry._registry_cache[cache_key]
+
         if not self.registry_path.exists():
             self._init_registry()
+            return ModelRegistry._registry_cache[cache_key]
 
         with open(self.registry_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            ModelRegistry._registry_cache[cache_key] = json.load(f)
+
+        return ModelRegistry._registry_cache[cache_key]
 
     def _save_registry(self, registry: dict) -> None:
-        """Save registry to disk."""
+        """Save registry to disk and update in-memory cache."""
         registry["last_updated"] = datetime.now(timezone.utc).isoformat()
         with open(self.registry_path, "w", encoding="utf-8") as f:
             json.dump(registry, f, indent=2, default=str)
+        # Keep cache consistent with what was just written
+        ModelRegistry._registry_cache[str(self.registry_path)] = registry
 
     def generate_model_id(
         self,
@@ -120,6 +176,7 @@ class ModelRegistry:
         training_metrics: dict,
         validation_metrics: dict,
         scalers: Optional[dict] = None,
+        training_info: Optional[dict] = None,
     ) -> str:
         """
         Save model and metadata to registry.
@@ -135,23 +192,15 @@ class ModelRegistry:
             training_metrics: Training set metrics
             validation_metrics: Validation set metrics
             scalers: Dict with target_scaler and covariate_scaler
+            training_info: Optional training diagnostics (training_time_seconds,
+                energy_kwh, per-epoch training_history for Torch models, …).
+                Persisted verbatim into metadata.json under "training_info".
 
         Returns:
             Path to saved model directory
         """
         model_dir = self.base_dir / model_id
         model_dir.mkdir(parents=True, exist_ok=True)
-
-        # Get version info
-        try:
-            darts_version = importlib.metadata.version("darts")
-        except Exception:
-            darts_version = "unknown"
-
-        try:
-            package_version = importlib.metadata.version("load-forecasting-mcp")
-        except Exception:
-            package_version = "0.1.0"
 
         # Build metadata
         metadata = {
@@ -167,10 +216,11 @@ class ModelRegistry:
                 "training": training_metrics,
                 "validation": validation_metrics,
             },
+            "training_info": training_info or {},
             "version_info": {
-                "darts_version": darts_version,
-                "load_forecasting_version": package_version,
-                "python_version": f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
+                "darts_version": _DARTS_VERSION,
+                "load_forecasting_version": _PKG_VERSION,
+                "python_version": _PYTHON_VERSION,
             },
         }
 
@@ -201,8 +251,14 @@ class ModelRegistry:
                 with open(scalers_dir / "covariate_scaler.pkl", "wb") as f:
                     pickle.dump(scalers["covariate_scaler"], f)
 
+            if "future_covariate_scaler" in scalers and scalers["future_covariate_scaler"] is not None:
+                with open(scalers_dir / "future_covariate_scaler.pkl", "wb") as f:
+                    pickle.dump(scalers["future_covariate_scaler"], f)
+
         # Update registry index
-        self._update_registry(model_id, model_type, building_name, validation_metrics, config)
+        self._update_registry(
+            model_id, model_type, building_name, validation_metrics, config, data_info
+        )
 
         logger.info(f"Model saved: {model_id}")
         return str(model_dir)
@@ -214,8 +270,10 @@ class ModelRegistry:
         building_name: Optional[str],
         validation_metrics: dict,
         config: dict,
+        data_info: Optional[dict] = None,
     ) -> None:
         """Update registry index with new model."""
+        data_info = data_info or {}
         registry = self._load_registry()
 
         # Remove existing entry if present (update case)
@@ -230,11 +288,35 @@ class ModelRegistry:
             "validation_cv_rmse": validation_metrics.get("cv_rmse"),
             "lookback_hours": config.get("lookback_hours"),
             "horizon_hours": config.get("horizon_hours"),
+            # Provenance: what the model was trained on, so list_models can
+            # answer "trained on which file?" without loading metadata.json.
+            "csv_path": data_info.get("csv_path"),
+            "target_column": data_info.get("target_column"),
+            "frequency": data_info.get("frequency_detected"),
             "path": f"models/{model_id}",
         }
         registry["models"].append(entry)
 
         self._save_registry(registry)
+
+    def load_metadata(self, model_id: str) -> dict:
+        """Read a model's metadata.json without unpickling the model.
+
+        Raises:
+            ModelNotFoundError: If model_id doesn't exist
+            ModelCorruptedError: If metadata.json is missing or unreadable
+        """
+        model_dir = self.base_dir / model_id
+        if not model_dir.exists():
+            raise ModelNotFoundError(f"Model not found: {model_id}")
+        metadata_path = model_dir / "metadata.json"
+        if not metadata_path.exists():
+            raise ModelCorruptedError(f"Metadata not found for model: {model_id}")
+        try:
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            raise ModelCorruptedError(f"Failed to read metadata for {model_id}: {e}")
 
     def load_model(self, model_id: str) -> tuple[Any, dict, dict]:
         """
@@ -269,12 +351,52 @@ class ModelRegistry:
             raise ModelCorruptedError(f"Model file not found: {model_id}")
 
         try:
-            # Try Darts load first
-            from darts.models import RegressionModel, NaiveMean, NaiveSeasonal, NaiveMovingAverage
-
+            # Try Darts load first (models already imported at module level)
             model_type = metadata.get("model_type", "")
             if model_type == "LinearRegression":
                 model = RegressionModel.load(str(model_path))
+            elif model_type == "XGBoost":
+                model = XGBModel.load(str(model_path))
+            elif model_type == "LSTM":
+                # PyTorch >= 2.6 defaults weights_only=True which rejects
+                # Lightning checkpoints containing optimizer state.  Pass
+                # weights_only=False explicitly; the checkpoint originates
+                # from this server so the source is trusted.
+                model = BlockRNNModel.load(str(model_path), weights_only=False)
+            elif model_type == "ARIMA":
+                # ARIMA uses the base ForecastingModel pickle-based save/load.
+                model = ARIMA.load(str(model_path))
+            elif model_type == "TFT":
+                # TFTModel uses PyTorch Lightning checkpoints (same caveat as LSTM).
+                model = TFTModel.load(str(model_path), weights_only=False)
+            elif model_type == "TiDE":
+                # TiDEModel uses PyTorch Lightning checkpoints (same caveat as LSTM).
+                model = TiDEModel.load(str(model_path), weights_only=False)
+            elif model_type == "TSMixer":
+                # TSMixerModel uses PyTorch Lightning checkpoints (same caveat as LSTM).
+                model = TSMixerModel.load(str(model_path), weights_only=False)
+            elif model_type == "TimesFM":
+                # TimesFM2p5Model is a PyTorch Lightning-based FoundationModel
+                # and stores its state (including HuggingFace-loaded weights)
+                # via the same Lightning checkpoint mechanism as LSTM/TFT.
+                if not _HAS_TIMESFM:
+                    raise ModelCorruptedError(
+                        "TimesFM2p5Model wrapper not available in this "
+                        "environment; cannot load model_id="
+                        f"{model_id}."
+                    )
+                model = TimesFM2p5Model.load(str(model_path), weights_only=False)
+            elif model_type == "TimesFM+Residual":
+                # Hybrid: TimesFM backbone + Ridge residual regressor.
+                # Content is stored across sibling files rooted at model_path;
+                # the primary file is a sentinel.
+                if not _HAS_TIMESFM:
+                    raise ModelCorruptedError(
+                        "TimesFM2p5Model wrapper not available in this "
+                        "environment; cannot load hybrid model_id="
+                        f"{model_id}."
+                    )
+                model = TimesFMResidualHybrid.load(str(model_path))
             elif model_type == "NaiveMean":
                 model = NaiveMean.load(str(model_path))
             elif model_type == "NaiveSeasonal":
@@ -306,6 +428,11 @@ class ModelRegistry:
             if covariate_scaler_path.exists():
                 with open(covariate_scaler_path, "rb") as f:
                     scalers["covariate_scaler"] = pickle.load(f)
+
+            future_covariate_scaler_path = scalers_dir / "future_covariate_scaler.pkl"
+            if future_covariate_scaler_path.exists():
+                with open(future_covariate_scaler_path, "rb") as f:
+                    scalers["future_covariate_scaler"] = pickle.load(f)
 
         logger.info(f"Model loaded: {model_id}")
         return model, metadata, scalers
@@ -379,8 +506,6 @@ class ModelRegistry:
             return False
 
         # Remove directory
-        import shutil
-
         shutil.rmtree(model_dir)
 
         # Update registry

@@ -1,0 +1,262 @@
+# Tune Model Specification
+# For AlphaBuilding-Agents SpecRegistry and AI discovery
+
+id: forecasting.tune_model
+version: "1.0.0"
+mcp_server: load_forecasting
+mcp_tool: tune_model
+
+category: forecasting
+tags: [load_forecasting, hyperparameter_tuning, optuna, xgboost, lstm, time_series]
+description: >
+  Hyperparameter-tune a forecasting model using Optuna and register the best result.
+  Runs n_trials trials, each sampling a different hyperparameter configuration from
+  the search space, training the model on the train split, and scoring it on the
+  validation split by CV-RMSE (lower is better). After all trials the best
+  configuration is used to train a final model, which is saved to the registry.
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+inputs:
+  - name: csv_path
+    type: string
+    required: true
+    delivery_mode: file_reference
+    description: >
+      Path to CSV file with datetime index and load data. Same format as
+      train_forecast_model.
+    example: "/data/building_33_hourly.csv"
+
+  - name: model_type
+    type: string
+    required: true
+    enum:
+      - "XGBoost"
+      - "LSTM"
+      - "LinearRegression"
+      - "ARIMA"
+      - "TFT"
+    description: >
+      Model type to tune. Built-in search spaces exist for XGBoost, LSTM, ARIMA,
+      and TFT. LinearRegression has no tunable hyperparameters and will return an
+      error unless a custom search_space is provided.
+
+  - name: n_trials
+    type: integer
+    required: false
+    default: 20
+    minimum: 1
+    description: >
+      Number of Optuna trials. More trials improve the search at the cost of
+      runtime. Recommended: 20-50 for XGBoost, 10-20 for LSTM (each LSTM trial
+      trains a neural network and is significantly slower).
+
+  - name: search_space
+    type: object
+    required: false
+    description: >
+      Custom hyperparameter search space. If not provided, the built-in default
+      for the model type is used. Each key is a hyperparameter name and the
+      value is a specification dict with:
+        - "type": "int" | "float" | "categorical"
+        - "low", "high": bounds for int/float types
+        - "log": true to sample on log scale (float only, optional)
+        - "choices": list of values for categorical type
+    example:
+      n_estimators: {type: "int", low: 50, high: 300}
+      learning_rate: {type: "float", low: 0.01, high: 0.3, log: true}
+      hidden_dim: {type: "categorical", choices: [32, 64, 128]}
+
+  - name: column_mapping
+    type: object
+    required: false
+    description: >
+      Map CSV column names to expected roles. Same format as train_forecast_model.
+    properties:
+      datetime:
+        type: string
+        description: Column containing timestamps
+      target:
+        type: string
+        description: Column containing load values to forecast
+      past_covariates:
+        type: array
+        items: { type: string }
+        description: Optional weather/feature columns
+      future_covariates:
+        type: array
+        items: { type: string }
+        description: >
+          Columns known for both past and future timesteps.
+          Ignored for LSTM (BlockRNNModel does not support future covariates).
+
+  - name: frequency
+    type: string
+    required: false
+    default: "h"
+    enum: ["15min", "30min", "h"]
+    description: Data frequency. Must match actual data frequency.
+
+  - name: lookback_hours
+    type: integer
+    required: false
+    default: 24
+    minimum: 1
+    maximum: 168
+    description: Hours of history to use as model input (fixed across trials)
+
+  - name: horizon_hours
+    type: integer
+    required: false
+    default: 6
+    minimum: 1
+    maximum: 48
+    description: Hours ahead to forecast (fixed across trials)
+
+  - name: validation_split
+    type: number
+    required: false
+    default: 0.2
+    minimum: 0.1
+    maximum: 0.3
+    description: Fraction of data to hold out for validation scoring.
+
+  - name: building_name
+    type: string
+    required: false
+    description: Building identifier (used in model naming and registry)
+    example: "Building_33"
+
+  - name: device
+    type: string
+    required: false
+    default: null
+    enum: ["cuda", "mps", "cpu", "auto"]
+    description: >
+      Compute device for PyTorch-backed models (LSTM, TFT, TiDE, TSMixer).
+      "cuda" uses an NVIDIA GPU, "mps" uses the Apple Silicon GPU, "cpu" forces
+      CPU, and "auto" (or omitting the field) auto-detects with priority
+      cuda > mps > cpu. Applied to every trial and the final model training.
+      Falls back to CPU with a warning if unavailable. Ignored by CPU-only
+      models (XGBoost, ARIMA).
+
+# ==============================================================================
+# DEFAULT SEARCH SPACES
+# ==============================================================================
+default_search_spaces:
+  XGBoost:
+    n_estimators: {type: "int", low: 30, high: 300}  # low=30 keeps paper default (40) reachable
+    max_depth: {type: "int", low: 3, high: 8}
+    learning_rate: {type: "float", low: 0.01, high: 0.3, log: true}
+    subsample: {type: "float", low: 0.6, high: 1.0}
+    colsample_bytree: {type: "float", low: 0.6, high: 1.0}
+
+  LSTM:
+    hidden_dim: {type: "categorical", choices: [32, 64, 128]}
+    n_rnn_layers: {type: "int", low: 1, high: 3}
+    dropout: {type: "float", low: 0.0, high: 0.4}
+    n_epochs: {type: "categorical", choices: [20, 50, 100]}
+
+  ARIMA:
+    p: {type: "int", low: 1, high: 6}
+    d: {type: "categorical", choices: [0, 1]}
+    q: {type: "int", low: 0, high: 3}
+
+  TFT:
+    hidden_size: {type: "categorical", choices: [16, 32, 64]}
+    lstm_layers: {type: "int", low: 1, high: 2}
+    num_attention_heads: {type: "categorical", choices: [2, 4]}
+    dropout: {type: "float", low: 0.0, high: 0.4}
+    n_epochs: {type: "categorical", choices: [20, 50]}
+
+# ==============================================================================
+# OUTPUTS
+# ==============================================================================
+outputs:
+  success:
+    type: boolean
+    description: Whether tuning completed successfully
+
+  error:
+    type: string
+    description: Error message if success=false
+
+  model_id:
+    type: string
+    description: >
+      Unique identifier of the registered best model (suffix "_tuned").
+      Use this with evaluate_forecast_model.
+    example: "Building_33_XGBoost_tuned_20250506_143022"
+
+  model_path:
+    type: string
+    description: Filesystem path to saved model directory
+
+  model_type:
+    type: string
+    description: Type of model tuned
+
+  best_params:
+    type: object
+    description: Best hyperparameter configuration found by Optuna
+
+  best_cv_rmse:
+    type: number
+    description: CV-RMSE of the best trial on the validation split (%)
+
+  n_trials_completed:
+    type: integer
+    description: Number of trials that completed (may be less than n_trials if some failed)
+
+  all_trial_results:
+    type: array
+    description: Per-trial results for analysis
+    items:
+      type: object
+      properties:
+        trial: {type: integer}
+        params: {type: object}
+        cv_rmse: {type: number, description: "null if trial failed"}
+
+  validation_metrics:
+    type: object
+    description: Metrics of the final model on the validation split
+    properties:
+      rmse: {type: number}
+      mae: {type: number}
+      mape: {type: number}
+      cv_rmse: {type: number}
+      r_squared: {type: number}
+
+  training_metrics:
+    type: object
+    description: Metrics of the final model on the training split
+
+  training_info:
+    type: object
+    properties:
+      training_time_seconds: {type: number}
+      lookback_hours: {type: integer}
+      horizon_hours: {type: integer}
+      darts_model_class: {type: string}
+
+  data_summary:
+    type: object
+    description: Summary of input data used
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+notes:
+  - "Built-in search spaces cover XGBoost and LSTM; provide search_space for other models"
+  - "Data is loaded once before the trial loop — no repeated I/O overhead"
+  - "Optuna uses TPE (Tree-structured Parzen Estimator) by default — efficient Bayesian search"
+  - "All trials use in-memory storage; no SQLite files are created"
+  - "The final model is trained on the train split with best_params and scored on val"
+  - "Use 5-10 trials for quick exploration, 20-50 for production tuning"
+  - "LSTM trials are slow (neural network training); consider n_trials=5-10 for LSTM"
+  - "LSTM does not support future covariates; future_covariates in column_mapping are ignored"
+  - "TimesFM is not tunable via this interface — the foundation model has no meaningful hyperparameter search space; use train_forecast_model with a fixed configuration instead"
+  - "TimesFM+Residual is not tunable via this interface — the TimesFM backbone has no meaningful search space and the Ridge residual regressor exposes only a single scalar (alpha); use train_forecast_model with a fixed configuration"
+  - "The registered model_id ends with '_tuned' to distinguish it from untuned models"

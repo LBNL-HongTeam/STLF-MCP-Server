@@ -1,0 +1,236 @@
+# Fetch Weather Forecast Specification
+# For AlphaBuilding-Agents SpecRegistry and AI discovery
+
+id: forecasting.fetch_weather_forecast
+version: "1.0.0"
+mcp_server: load_forecasting
+mcp_tool: fetch_weather_forecast
+
+category: data_acquisition
+tags: [weather, open_meteo, covariates, live_inference, forecast, temperature, solar]
+description: >
+  Fetch live weather forecast data from the Open-Meteo free API for a given
+  location and return a tidy DataFrame (and optional CSV) of weather variables
+  covering a specified time window.  Designed to produce the future-covariate
+  rows required by generate_forecast for models trained with weather inputs.
+
+  No API key is required for non-commercial use.
+
+  Typical workflow:
+    1. Call fetch_weather_forecast to get weather data (past_hours + forecast_hours).
+    2. Merge with recent load readings using merge_covariates.
+    3. Pass the merged CSV to generate_forecast.
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+inputs:
+  # --- Location ---
+  - name: latitude
+    type: number
+    required: true
+    minimum: -90
+    maximum: 90
+    description: WGS84 latitude of the building or site.
+    example: 37.7749
+
+  - name: longitude
+    type: number
+    required: true
+    minimum: -180
+    maximum: 180
+    description: WGS84 longitude of the building or site.
+    example: -122.4194
+
+  # --- Time window ---
+  - name: forecast_hours
+    type: integer
+    required: false
+    default: 72
+    minimum: 1
+    maximum: 384
+    description: >
+      Number of future hours to fetch from Open-Meteo (1–384).
+      For day-ahead inference use 24–48; for week-ahead use up to 168.
+      Open-Meteo supports up to 16 days (384h) for hourly data.
+    example: 48
+
+  - name: past_hours
+    type: integer
+    required: false
+    default: 0
+    minimum: 0
+    maximum: 92
+    description: >
+      Number of archive hours before now to include (0–92).
+      Set this to at least lookback_hours of your model so the merged CSV
+      also covers the context (lookback) window.
+    example: 168
+
+  # --- Timezone ---
+  - name: timezone
+    type: string
+    required: false
+    default: "UTC"
+    description: >
+      IANA timezone string for the returned timestamps.
+      Use the same timezone as your load data so merge_covariates can
+      join on matching timestamps without a conversion step.
+    example: "America/Los_Angeles"
+
+  # --- Variable selection ---
+  - name: variables
+    type: array
+    items: { type: string }
+    required: false
+    description: >
+      Explicit list of Open-Meteo hourly variable names to fetch.
+      Takes priority over preset if both are provided.
+      If neither variables nor preset is given, defaults to the
+      "building_load" preset.
+      Common names: temperature_2m, relative_humidity_2m,
+      apparent_temperature, shortwave_radiation, wind_speed_10m,
+      cloud_cover, precipitation, dew_point_2m, direct_radiation,
+      diffuse_radiation, wind_direction_10m, surface_pressure, is_day.
+    example: ["temperature_2m", "relative_humidity_2m", "shortwave_radiation"]
+
+  - name: preset
+    type: string
+    required: false
+    enum: [minimal, building_load, extended]
+    description: >
+      Named variable preset. Ignored when variables is provided.
+      - minimal: temperature_2m, relative_humidity_2m
+      - building_load (default): temperature_2m, relative_humidity_2m,
+          apparent_temperature, shortwave_radiation, wind_speed_10m,
+          cloud_cover, precipitation
+      - extended: adds dew_point_2m, direct_radiation, diffuse_radiation,
+          wind_direction_10m, surface_pressure, is_day
+    example: "building_load"
+
+  # --- Resolution ---
+  - name: resolution
+    type: string
+    required: false
+    default: "hourly"
+    enum: [hourly, minutely_15]
+    description: >
+      Temporal resolution of the returned data.
+      "hourly" (default) returns one row per hour.
+      "minutely_15" returns one row per 15 minutes — natively available
+      in Central Europe and North America; elsewhere it is interpolated
+      from hourly data by Open-Meteo.
+      Use "minutely_15" when your load model was trained at 15-min frequency.
+    example: "hourly"
+
+  # --- Output options ---
+  - name: output_csv_path
+    type: string
+    required: false
+    description: >
+      Optional path to write the weather data as a CSV file.
+      Recommended for large requests or when passing data to merge_covariates.
+    example: "/data/weather_forecast_72h.csv"
+
+  - name: rename_columns
+    type: boolean
+    required: false
+    default: true
+    description: >
+      If true (default), rename Open-Meteo variable names to shorter aliases
+      that match ForecastingDataLoader auto-detection patterns:
+        temperature_2m        → temperature
+        relative_humidity_2m  → relative_humidity
+        shortwave_radiation   → solar_radiation
+        wind_speed_10m        → wind_speed
+        etc.
+      Set false to keep original Open-Meteo column names.
+
+  - name: datetime_col
+    type: string
+    required: false
+    default: "datetime"
+    description: >
+      Column name for timestamps in the returned data.
+      Use the same name as in your load CSV to simplify merge_covariates.
+    example: "datetime"
+
+# ==============================================================================
+# OUTPUTS
+# ==============================================================================
+outputs:
+  success:
+    type: boolean
+    description: Whether the weather fetch completed successfully.
+
+  error:
+    type: string
+    description: Error message if success=false.
+
+  latitude:
+    type: number
+    description: Echoed latitude from the request.
+
+  longitude:
+    type: number
+    description: Echoed longitude from the request.
+
+  timezone:
+    type: string
+    description: Echoed timezone from the request.
+
+  resolution:
+    type: string
+    description: Echoed resolution — "hourly" or "minutely_15".
+
+  n_rows:
+    type: integer
+    description: Number of rows in the returned weather data.
+
+  forecast_start:
+    type: string
+    format: datetime
+    description: Timestamp of the first row (ISO8601).
+
+  forecast_end:
+    type: string
+    format: datetime
+    description: Timestamp of the last row (ISO8601).
+
+  variables_fetched:
+    type: array
+    items: { type: string }
+    description: List of weather variable column names in the returned data.
+
+  weather_data:
+    type: array
+    description: >
+      List of weather records, one per time step.  Each record has a
+      datetime field (using the requested datetime_col name) and one key
+      per weather variable.  For large requests, prefer output_csv_path.
+    items:
+      type: object
+      additionalProperties: true
+
+  warnings:
+    type: array
+    items: { type: string }
+    description: Optional list of non-fatal warnings (e.g. unrecognized variable names).
+
+  output_csv_path:
+    type: string
+    description: Path to the written CSV file, if output_csv_path was provided.
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+notes:
+  - "Open-Meteo is free for non-commercial use — no API key required"
+  - "Set past_hours >= lookback_hours of your model to cover the context window"
+  - "Set forecast_hours >= horizon_hours of your model to cover the prediction horizon"
+  - "Use the same timezone as your load data to avoid timestamp misalignment in merge_covariates"
+  - "rename_columns=true (default) produces column names recognised by ForecastingDataLoader auto-detection"
+  - "Use merge_covariates to join the weather output with your load CSV before calling generate_forecast"
+  - "For 15-min load models, set resolution='minutely_15'; native coverage is Central Europe + North America"
+  - "weather_data in the response contains all rows — use output_csv_path for large payloads"
+  - "Open-Meteo supports up to 16 days (384h) of hourly forecast data"

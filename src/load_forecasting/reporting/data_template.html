@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ title }}</title>
+  <style>
+{{ inlined_css }}
+
+/* Data-report specific additions */
+.range-bar { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 14px; align-items: center; }
+.range-bar .lbl { color: var(--muted); font-size: 0.85em; margin-right: 4px; }
+.range-bar button {
+  border: 1px solid var(--border); background: var(--card-bg); color: var(--fg);
+  border-radius: 6px; padding: 4px 10px; font-size: 0.85em; cursor: pointer;
+}
+.range-bar button:hover { border-color: var(--accent); }
+.range-bar button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.legend-inline { display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.85em; color: var(--muted); margin: 4px 0 8px; }
+.legend-inline .sw { display: inline-block; width: 22px; height: 3px; vertical-align: middle; margin-right: 6px; border-radius: 2px; }
+.legend-inline .sw.band { height: 12px; opacity: 0.35; }
+.cov-panel { margin-bottom: 14px; }
+.cov-panel .cov-title { font-weight: 600; font-size: 0.95em; margin: 0 0 2px; display: flex; gap: 8px; align-items: baseline; }
+.cov-panel .cov-title .tag { font-size: 0.75em; font-weight: 500; padding: 1px 7px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); }
+.cov-panel .cov-title .tag.unmapped { background: #fef3c7; color: var(--warn); }
+.cov-panel .cov-title .tag.future { background: #d1fae5; color: var(--good); }
+.cov-panel .cov-title .r { color: var(--muted); font-size: 0.8em; font-weight: 400; }
+table.data { border-collapse: collapse; width: 100%; font-size: 0.85em; }
+table.data th, table.data td { border-bottom: 1px solid var(--border); padding: 5px 8px; text-align: left; }
+table.data th { color: var(--muted); font-weight: 600; }
+table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.flag { display: inline-block; margin: 3px 6px 3px 0; padding: 3px 9px; border-radius: 6px; font-size: 0.82em; background: #fef3c7; color: var(--warn); }
+.flag.block { background: #fee2e2; color: var(--bad); }
+.flag.ok { background: #d1fae5; color: var(--good); }
+ul.tight { margin: 6px 0 0 18px; padding: 0; font-size: 0.9em; }
+ul.tight li { margin: 3px 0; }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <header class="report-header">
+      <h1 id="report-title">{{ title }}</h1>
+      <div class="subtitle" id="report-subtitle"></div>
+    </header>
+
+    <nav class="toc">
+      <a href="#summary">Summary</a>
+      <a href="#overview">Time series</a>
+      <a href="#split">Train / validation split</a>
+      <a href="#covariates">Covariates</a>
+      <a href="#profiles">Load profiles</a>
+      <a href="#heatmap">Heatmap</a>
+      <a href="#relations">Covariate relationships</a>
+      <a href="#quality">Data quality</a>
+    </nav>
+
+    <section id="summary">
+      <h2>Summary <span id="ready-badge" class="badge" style="margin-left:8px"></span></h2>
+      <div class="kv-grid" id="summary-grid"></div>
+      <div id="summary-flags" style="margin-top:10px"></div>
+    </section>
+
+    <section id="overview">
+      <h2>Time series</h2>
+      <div class="range-bar" id="range-bar"></div>
+      <div class="legend-inline" id="overview-legend"></div>
+      <div class="chart" id="chart-overview"></div>
+      <div class="note" id="overview-note" style="margin-top:6px"></div>
+    </section>
+
+    <section id="split">
+      <h2>Train / validation split</h2>
+      <div class="note" id="split-note"></div>
+      <div class="chart" id="chart-split-timeline"></div>
+      <div id="split-table" style="margin-top:10px"></div>
+    </section>
+
+    <section id="covariates">
+      <h2>Covariates</h2>
+      <div class="note" id="covariates-note"></div>
+      <div id="covariate-panels"></div>
+    </section>
+
+    <section id="profiles">
+      <h2>Load profiles</h2>
+      <div class="chart-row">
+        <div class="chart">
+          <h3 style="margin-top:0">Hour of day, by season</h3>
+          <div id="chart-profile-season"></div>
+        </div>
+        <div class="chart">
+          <h3 style="margin-top:0">Hour of day, weekday vs weekend</h3>
+          <div id="chart-profile-weekday"></div>
+        </div>
+      </div>
+      <div class="chart-row" style="margin-top:12px">
+        <div class="chart">
+          <h3 style="margin-top:0">Day of week</h3>
+          <div id="chart-profile-dow"></div>
+        </div>
+        <div class="chart">
+          <h3 style="margin-top:0">Month</h3>
+          <div id="chart-profile-month"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="heatmap">
+      <h2>Day &times; hour heatmap</h2>
+      <div class="note">Hourly mean of the target. Columns are days, rows are hours; the diurnal band, weekends and seasonal shifts read directly off the colour.</div>
+      <div class="chart" id="chart-heatmap"></div>
+    </section>
+
+    <section id="relations">
+      <h2>Covariate relationships</h2>
+      <div class="note">Target against each covariate. Dots are a sample coloured by hour of day; the dark line is the binned mean with an interquartile band &mdash; a V or hockey-stick shape against temperature is the heating/cooling signature.</div>
+      <div id="relation-panels"></div>
+    </section>
+
+    <section id="quality">
+      <h2>Data quality</h2>
+      <div class="chart-row">
+        <div class="chart">
+          <h3 style="margin-top:0">Gaps in the timestamp index</h3>
+          <div id="gaps-table"></div>
+        </div>
+        <div class="chart">
+          <h3 style="margin-top:0">Outliers</h3>
+          <div id="outliers-table"></div>
+        </div>
+      </div>
+      <h3>Suggestions</h3>
+      <ul class="tight" id="suggestions-list"></ul>
+    </section>
+
+    <footer class="report-footer">
+      <span id="footer-generated"></span>
+    </footer>
+  </div>
+
+  <script>
+{{ d3_js }}
+  </script>
+  <script>
+{{ plot_js }}
+  </script>
+  <script>
+window.__REPORT_DATA__ = {{ payload_json }};
+  </script>
+  <script>
+{{ charts_js }}
+  </script>
+</body>
+</html>

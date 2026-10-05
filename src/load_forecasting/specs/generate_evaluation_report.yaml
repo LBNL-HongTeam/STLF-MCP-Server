@@ -1,0 +1,136 @@
+# Generate Evaluation Report Specification
+
+id: forecasting.generate_evaluation_report
+version: "0.0.1"
+mcp_server: load_forecasting
+mcp_tool: generate_evaluation_report
+
+category: forecasting
+tags: [load_forecasting, evaluation, report, visualization, html]
+description: >
+  Generate a self-contained HTML evaluation report for a trained forecasting
+  model. The HTML embeds its own JavaScript (d3 + Observable Plot) and the
+  full prediction/input dataset, so the file can be opened directly in any
+  modern browser (file://) without needing a server or network access.
+
+  Sections rendered:
+    - Model metadata (id, type, building, lookback/horizon, train range)
+    - Test metrics summary (RMSE, MAE, MAPE, CV-RMSE, R²) with comparison to
+      validation
+    - Actual vs predicted interactive time series
+    - Residuals over time
+    - Residual distribution (histogram) and parity plot
+    - Hour-of-day and day-of-week MAE bar charts
+    - Input data preview (target + covariates with per-column statistics)
+    - Residual analysis numbers (mean, std, lag-1 autocorrelation)
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+inputs:
+  - name: model_id
+    type: string
+    required: true
+    description: >
+      ID of a trained model (returned from train_forecast_model).
+      Use list_models to discover available IDs.
+    example: "Building_33_LinearRegression_20250124_143022"
+
+  - name: csv_path
+    type: string
+    required: true
+    delivery_mode: file_reference
+    description: >
+      Path to CSV with test data. Should follow the same column layout the
+      model was trained on. Internally the tool runs evaluate_forecast_model,
+      so the same data requirements apply (≥ lookback_hours + horizon_hours
+      of contiguous data; coverage ≥ 90 %).
+    example: "/data/building_33_test.csv"
+    constraints:
+      min_duration: "P1W"
+      min_coverage: 0.90
+
+  - name: output_html_path
+    type: string
+    required: true
+    delivery_mode: file_reference
+    description: >
+      Path where the .html report will be written. Parent directories are
+      created if missing. Must end with .html or .htm.
+    example: "/reports/building_33_eval.html"
+
+  - name: column_mapping
+    type: object
+    required: false
+    description: >
+      Optional override of the column mapping. Defaults to the mapping the
+      model was trained with. Supports: datetime, target,
+      past_covariates (array), future_covariates (array).
+
+  - name: include_residual_analysis
+    type: boolean
+    required: false
+    default: true
+    description: >
+      Include mean residual, std residual, and lag-1 autocorrelation in the
+      report's "Residual analysis" section.
+
+  - name: title
+    type: string
+    required: false
+    description: >
+      Optional human-friendly title for the report header. Defaults to
+      "Evaluation report — <model_id>".
+
+# ==============================================================================
+# OUTPUTS
+# ==============================================================================
+outputs:
+  success:
+    type: boolean
+    description: Whether the report was generated successfully.
+
+  error:
+    type: string
+    description: Error message if success=false.
+
+  output_html_path:
+    type: string
+    description: Absolute path to the generated HTML file.
+
+  file_size_bytes:
+    type: integer
+    description: Size of the generated HTML file in bytes.
+
+  n_points:
+    type: integer
+    description: Number of prediction points included in the report.
+
+  model_id:
+    type: string
+
+  model_type:
+    type: string
+
+  test_metrics:
+    type: object
+    description: Same metrics returned by evaluate_forecast_model.
+    properties:
+      rmse: { type: number }
+      mae: { type: number }
+      mape: { type: number, units: "%" }
+      cv_rmse: { type: number, units: "%" }
+      r_squared: { type: number }
+
+  comparison_to_validation:
+    type: object
+    description: Comparison of test vs validation metrics, if available.
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+notes:
+  - "The HTML is fully self-contained: vendored d3.min.js and observable-plot.min.js are inlined, plus all data."
+  - "Typical file size: 1–3 MB for a few thousand predictions; ~6–8 MB for a year of 15-minute data."
+  - "No downsampling is applied — every prediction point is plotted."
+  - "Use list_models to discover model_id values; use inspect_data to validate the CSV before generating."

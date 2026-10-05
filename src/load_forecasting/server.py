@@ -1,19 +1,37 @@
 """
 FastMCP Server Configuration and Tool Registration
-
-This module sets up the MCP server and registers all forecasting tools.
 """
 
+import json
 import logging
 import os
+from pathlib import Path
 
 from fastmcp import FastMCP
 
 from .core.spec_loader import get_all_specs
-from .tools.forecasting_tools import (
+from .core.paths import ENV_DATA_DIR, ENV_OUTPUT_DIR, default_dataset_dir, default_output_dir
+from .core import skill_loader
+from .tools import (
     train_forecast_model,
     evaluate_forecast_model,
     list_models,
+    inspect_data,
+    list_datasets,
+    list_skills,
+    get_skill,
+    tune_model,
+    generate_forecast,
+    backtest_model,
+    generate_evaluation_report,
+    generate_backtest_report,
+    merge_covariates,
+    fetch_weather_forecast,
+    generate_inference_dashboard,
+    generate_data_report,
+    generate_training_report,
+    batch_train_forecast_models,
+    batch_generate_forecast,
 )
 
 # Configure logging
@@ -23,123 +41,132 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def _build_instructions() -> str:
+    """Server-level guidance delivered to the client in the MCP initialize handshake.
+
+    Most MCP hosts (Claude Desktop, Claude Code, Codex) place this text in the
+    model's context, so it is the cheapest way to tell an agent that sample
+    data exists and how paths are resolved -- facts it cannot discover by
+    itself because the server's filesystem is invisible to the client.
+    """
+    dataset_dir, source = default_dataset_dir()
+    model_dir = Path(os.getenv("LOAD_FORECASTING_MODEL_DIR", "models")).expanduser().resolve()
+
+    lines = [
+        "Short-term load forecasting server: train, tune, evaluate, backtest and "
+        "forecast electrical load with Darts models.",
+        "Typical workflow: list_datasets -> inspect_data -> train_forecast_model -> "
+        "evaluate_forecast_model or backtest_model -> generate_forecast.",
+    ]
+    if dataset_dir is not None:
+        label = "bundled sample datasets" if source == "bundled_examples" else f"datasets ({source})"
+        lines.append(
+            f"This server has {label} at {dataset_dir}. Call list_datasets to "
+            "enumerate them with absolute paths before telling the user no data is "
+            "available."
+        )
+    else:
+        lines.append(
+            f"No dataset directory is configured; set {ENV_DATA_DIR} or pass absolute "
+            "csv_path values."
+        )
+    lines.append(
+        "csv_path arguments accept absolute paths, or paths relative to "
+        f"{ENV_DATA_DIR}, the repository root, or the bundled examples directory "
+        "(e.g. data/examples/AMI/2021_city_level.csv). Prefer the absolute `path` "
+        "values returned by list_datasets."
+    )
+    lines.append(
+        f"Trained models are stored under {model_dir}. list_models reports the "
+        "csv_path, target_column and frequency each model was trained on."
+    )
+    lines.append(
+        f"To visualise a dataset (time series with train/validation split, covariates, "
+        "load profiles, heatmap, covariate relationships) call generate_data_report; "
+        f"output_html_path is optional and defaults to {default_output_dir() / 'reports'} "
+        f"({ENV_OUTPUT_DIR} overrides). Tell the user the returned path so they can open it."
+    )
+    skills = skill_loader.list_skills()
+    if skills:
+        names = ", ".join(s["name"] for s in skills)
+        lines.append(
+            f"This server bundles workflow skills ({names}). Before any multi-step "
+            "forecasting task, call list_skills and then get_skill(name) and follow "
+            "the returned instructions; they define the mandatory checks and tool "
+            "order. The same content is available as MCP resources at "
+            "skill://index.json and skill://{name}/SKILL.md."
+        )
+    return "\n".join(lines)
+
+
 # Initialize FastMCP server
-mcp = FastMCP(
-    name="load_forecasting",
+mcp = FastMCP(name="load_forecasting", instructions=_build_instructions())
+
+# Register tools directly — no wrapper functions needed
+mcp.add_tool(train_forecast_model)
+mcp.add_tool(evaluate_forecast_model)
+mcp.add_tool(list_models)
+mcp.add_tool(inspect_data)
+mcp.add_tool(list_datasets)
+mcp.add_tool(list_skills)
+mcp.add_tool(get_skill)
+mcp.add_tool(tune_model)
+mcp.add_tool(generate_forecast)
+mcp.add_tool(backtest_model)
+mcp.add_tool(generate_evaluation_report)
+mcp.add_tool(generate_backtest_report)
+mcp.add_tool(merge_covariates)
+mcp.add_tool(fetch_weather_forecast)
+mcp.add_tool(generate_inference_dashboard)
+mcp.add_tool(generate_data_report)
+mcp.add_tool(generate_training_report)
+mcp.add_tool(batch_train_forecast_models)
+mcp.add_tool(batch_generate_forecast)
+
+
+# ---------------------------------------------------------------------------
+# Skills over MCP -- resource view
+#
+# Same content as the list_skills / get_skill tools, exposed in the shape the
+# MCP "Skills Over MCP" working group recommends for servers today: a
+# discovery index plus one markdown resource per skill, read lazily via
+# resources/read. Clients that surface resources (Claude Code, Claude Desktop)
+# can pull a skill without spending a tool call; the tools remain for clients
+# that do not.
+# ---------------------------------------------------------------------------
+
+@mcp.resource(
+    "skill://index.json",
+    name="skills_index",
+    description="Index of the workflow skills bundled with this server (name, description, sections).",
+    mime_type="application/json",
 )
+def skills_index_resource() -> str:
+    return json.dumps({"skills": skill_loader.list_skills()}, indent=2)
 
 
-# Register tools
-@mcp.tool(name="train_forecast_model")
-async def _train_forecast_model(
-    csv_path: str,
-    model_type: str = "LinearRegression",
-    lookback_hours: int = 24,
-    horizon_hours: int = 6,
-    frequency: str = "h",
-    validation_split: float = 0.2,
-    building_name: str | None = None,
-    model_name: str | None = None,
-    column_mapping: dict | None = None,
-) -> dict:
-    """
-    Train a time-series forecasting model on historical building load data.
-
-    Evaluates on a validation split and persists the trained model for later use.
-    Supports naive baselines and linear regression models.
-
-    Args:
-        csv_path: Path to CSV file with datetime index and load data
-        model_type: Model type (NaiveMean, NaiveSeasonal, NaiveMovingAverage, LinearRegression)
-        lookback_hours: Hours of history to use as model input (1-168)
-        horizon_hours: Hours ahead to forecast (1-48)
-        frequency: Data frequency (15min, 30min, h)
-        validation_split: Fraction of data for validation (0.1-0.3)
-        building_name: Building identifier for model naming
-        model_name: Custom model name (auto-generated if not provided)
-        column_mapping: Map CSV columns to roles (datetime, target, past_covariates)
-
-    Returns:
-        Dict with model_id, metrics, and data summary
-    """
-    return await train_forecast_model(
-        csv_path=csv_path,
-        model_type=model_type,
-        lookback_hours=lookback_hours,
-        horizon_hours=horizon_hours,
-        frequency=frequency,
-        validation_split=validation_split,
-        building_name=building_name,
-        model_name=model_name,
-        column_mapping=column_mapping,
-    )
+@mcp.resource(
+    "skill://{name}/SKILL.md",
+    name="skill_markdown",
+    description="Full SKILL.md for one bundled skill; `name` comes from skill://index.json.",
+    mime_type="text/markdown",
+)
+def skill_markdown_resource(name: str) -> str:
+    return skill_loader.get_skill(name)["content"]
 
 
-@mcp.tool(name="evaluate_forecast_model")
-async def _evaluate_forecast_model(
-    model_id: str,
-    csv_path: str,
-    column_mapping: dict | None = None,
-    return_predictions: bool = True,
-    output_csv_path: str | None = None,
-    include_residual_analysis: bool = False,
-) -> dict:
-    """
-    Evaluate a trained forecasting model on new/test data.
-
-    Loads a previously trained model and generates predictions with accuracy metrics.
-    Uses column mapping from training if not explicitly provided.
-
-    Args:
-        model_id: ID of trained model (from train_forecast_model)
-        csv_path: Path to CSV with test data
-        column_mapping: Column mapping (uses training mapping if not provided)
-        return_predictions: Include predicted values in output
-        output_csv_path: Optional path to save predictions as CSV
-        include_residual_analysis: Include residual statistics
-
-    Returns:
-        Dict with test metrics, comparison to validation, and predictions
-    """
-    return await evaluate_forecast_model(
-        model_id=model_id,
-        csv_path=csv_path,
-        column_mapping=column_mapping,
-        return_predictions=return_predictions,
-        output_csv_path=output_csv_path,
-        include_residual_analysis=include_residual_analysis,
-    )
+@mcp.resource(
+    "skill://{name}/files/{path*}",
+    name="skill_file",
+    description="A supporting file from a bundled skill (see its supporting_files list).",
+    mime_type="text/plain",
+)
+def skill_file_resource(name: str, path: str) -> str:
+    return skill_loader.get_skill_file(name, path)["content"]
 
 
-@mcp.tool(name="list_models")
-async def _list_models(
-    building_name: str | None = None,
-    model_type: str | None = None,
-    sort_by: str = "created_at",
-    limit: int = 20,
-) -> dict:
-    """
-    List all trained models in the registry with their metadata and metrics.
-
-    Args:
-        building_name: Filter models by building name
-        model_type: Filter by model type (e.g., LinearRegression)
-        sort_by: Sort order (created_at, validation_cv_rmse, model_type)
-        limit: Maximum number of models to return
-
-    Returns:
-        Dict with list of models and total count
-    """
-    return await list_models(
-        building_name=building_name,
-        model_type=model_type,
-        sort_by=sort_by,
-        limit=limit,
-    )
-
-
-@mcp.tool(name="get_algorithm_specifications")
-async def _get_algorithm_specifications() -> dict:
+def get_algorithm_specifications() -> dict:
     """
     Return all algorithm specifications for AI agent discovery.
 
@@ -157,23 +184,14 @@ async def _get_algorithm_specifications() -> dict:
     }
 
 
-def run_server(transport_mode: str = "stdio"):
-    """Run the MCP server with specified transport."""
-    port = int(os.getenv("MCP_HTTP_PORT", "8003"))
+mcp.add_tool(get_algorithm_specifications)
 
+
+def run_server(transport_mode: str = "stdio", port: int = 8003) -> None:
+    """Run the MCP server with the specified transport."""
     if transport_mode == "http":
-        logger.info(f"Starting LoadForecasting-MCP server in HTTP mode on port {port}")
+        logger.info("Starting LoadForecasting-MCP server in HTTP mode on port %d", port)
         mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
     else:
         logger.info("Starting LoadForecasting-MCP server in STDIO mode")
         mcp.run(transport="stdio")
-
-
-def main():
-    """Entry point for console script."""
-    transport_mode = os.getenv("MCP_TRANSPORT", "stdio").lower()
-    run_server(transport_mode)
-
-
-if __name__ == "__main__":
-    main()

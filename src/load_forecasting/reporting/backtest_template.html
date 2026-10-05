@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ title }}</title>
+  <style>
+{{ inlined_css }}
+
+/* ---- Backtest-specific styles ------------------------------------------- */
+
+/* Playback slider section */
+.playback-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.playback-controls label {
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+#bt-slider {
+  flex: 1 1 300px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+#bt-window-info {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.playback-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.playback-btn:hover { opacity: 0.85; }
+.playback-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+#bt-play-pause {
+  min-width: 64px;
+}
+
+/* Horizon error chart */
+#chart-horizon-rmse {
+  margin-top: 4px;
+}
+
+/* Backtest summary cards */
+.summary-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.summary-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+}
+
+.summary-card .label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.summary-card .value {
+  font-size: 18px;
+  font-weight: 600;
+  margin-top: 4px;
+  word-break: break-all;
+}
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <header class="report-header">
+      <h1 id="report-title">{{ title }}</h1>
+      <div class="subtitle" id="report-subtitle"></div>
+    </header>
+
+    <nav class="toc">
+      <a href="#meta">Metadata</a>
+      <a href="#bt-summary">Backtest summary</a>
+      <a href="#metrics">Metrics</a>
+      <a href="#playback">Forecast playback</a>
+      <a href="#horizon-error">H-step error</a>
+      <a href="#probabilistic">Prediction intervals</a>
+      <a href="#error-profile">Error profile</a>
+      <a href="#peak-metrics">Peak metrics</a>
+      <a href="#residual-analysis">Residual analysis</a>
+    </nav>
+
+    <!-- 1. Model metadata -->
+    <section id="meta">
+      <h2>Model metadata</h2>
+      <div class="kv-grid" id="meta-grid"></div>
+    </section>
+
+    <!-- 2. Backtest summary -->
+    <section id="bt-summary">
+      <h2>Backtest summary</h2>
+      <div class="summary-cards" id="bt-summary-cards"></div>
+    </section>
+
+    <!-- 3. Overall metrics -->
+    <section id="metrics">
+      <h2>Backtest metrics
+        <span id="compare-badge" class="badge" style="margin-left:8px"></span>
+      </h2>
+      <div class="metric-cards" id="metric-cards"></div>
+    </section>
+
+    <!-- 4. Forecast playback slider -->
+    <section id="playback">
+      <h2>Forecast playback</h2>
+      <p class="note">
+        Use the slider to step through each re-forecast window.
+        The grey line shows actual load; the blue segment shows the model's
+        predicted trajectory starting from the forecast origin.
+      </p>
+
+      <div class="playback-controls">
+        <button class="playback-btn" id="bt-prev" title="Previous window">&#9664;</button>
+        <button class="playback-btn" id="bt-play-pause" title="Auto-play">&#9654; Play</button>
+        <button class="playback-btn" id="bt-next" title="Next window">&#9654;</button>
+        <input type="range" id="bt-slider" min="0" value="0" step="1" />
+        <label id="bt-slider-label" style="min-width:80px">Window 1 / 1</label>
+      </div>
+
+      <div class="chart" id="chart-playback"></div>
+
+      <div id="bt-window-info"></div>
+    </section>
+
+    <!-- 5. H-step-ahead error -->
+    <section id="horizon-error">
+      <h2>H-step-ahead RMSE</h2>
+      <p class="note">
+        RMSE of the h-step-ahead prediction across all re-forecast windows.
+        Values typically increase with horizon as uncertainty accumulates.
+      </p>
+      <div class="chart" id="chart-horizon-rmse"></div>
+    </section>
+
+    <!-- 5b. Prediction intervals (quantile-trained models only) -->
+    <section id="probabilistic">
+      <h2>Prediction intervals</h2>
+      <p class="note">
+        Interval quality across every re-forecast window. <strong>Pooled
+        coverage alone is not sufficient</strong>: it averages a tight
+        near-origin band with a loose far-horizon one, so a model that is
+        over-covered at h=1 and under-covered at h=24 can report a healthy
+        overall figure. The per-horizon breakdown below is the diagnostic that
+        matters — bars falling below the dashed nominal line are
+        under-covered (the model is overconfident at that lead time).
+      </p>
+      <div class="metric-cards" id="bt-probabilistic-cards"></div>
+      <div class="kv-grid" id="bt-probabilistic-kv"></div>
+
+      <h3>Coverage by horizon step</h3>
+      <div class="chart" id="chart-horizon-coverage"></div>
+
+      <h3>Interval width by horizon step</h3>
+      <p class="note">
+        Sharpness counterweight: widening bands buy coverage. Width should grow
+        with lead time — a flat profile alongside falling coverage means the
+        model is not propagating uncertainty.
+      </p>
+      <div class="chart" id="chart-horizon-width"></div>
+
+      <h3>Pinball loss by quantile</h3>
+      <div class="chart" id="chart-bt-pinball"></div>
+    </section>
+
+    <!-- 6. Error profile -->
+    <section id="error-profile">
+      <h2>Error profile</h2>
+      <div class="chart-row">
+        <div class="chart">
+          <h3 style="margin-top:0">Hour-of-day MAE</h3>
+          <div id="chart-hourly-mae"></div>
+        </div>
+        <div class="chart">
+          <h3 style="margin-top:0">Day-of-week MAE</h3>
+          <div id="chart-dow-mae"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 7. Peak metrics -->
+    <section id="peak-metrics">
+      <h2>Peak metrics</h2>
+      <p class="note">
+        Peak MAPE (PMAPE) and Peak Timing Error (PTE) on user-supplied peak
+        days, following Li et al. (2025), Table 5.
+      </p>
+      <div class="metric-cards" id="peak-metric-cards"></div>
+      <div class="kv-grid" id="peak-metric-counts"></div>
+
+      <h3>Actual vs predicted peak load</h3>
+      <div class="chart" id="chart-peak-values"></div>
+
+      <h3>Per-day peak breakdown</h3>
+      <table class="stats">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Actual peak</th>
+            <th>Predicted peak</th>
+            <th>Actual hour</th>
+            <th>Predicted hour</th>
+            <th>PMAPE %</th>
+            <th>PTE (hrs)</th>
+          </tr>
+        </thead>
+        <tbody id="peak-metrics-body"></tbody>
+      </table>
+    </section>
+
+    <!-- 8. Residual analysis -->
+    <section id="residual-analysis">
+      <h2>Residual analysis</h2>
+      <div class="kv-grid" id="residual-analysis-grid"></div>
+    </section>
+
+    <footer class="report-footer">
+      load_forecasting backtest report · self-contained · vendored
+      d3 v7 + Observable Plot v0.6
+    </footer>
+
+  </div>
+
+  <!-- ============================================================
+       Embedded JS — order matters: d3 must load before Plot.
+       ============================================================ -->
+  <script>
+{{ d3_js }}
+  </script>
+  <script>
+{{ plot_js }}
+  </script>
+  <script id="report-data" type="application/json-not-loaded">{}</script>
+  <script>
+window.__BACKTEST_DATA__ = {{ payload_json }};
+  </script>
+  <script>
+{{ charts_js }}
+  </script>
+</body>
+</html>

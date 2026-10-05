@@ -1,0 +1,159 @@
+# Merge Covariates Specification
+# For AlphaBuilding-Agents SpecRegistry and AI discovery
+
+id: forecasting.merge_covariates
+version: "1.0.0"
+mcp_server: load_forecasting
+mcp_tool: merge_covariates
+
+category: data_acquisition
+tags: [data_preparation, covariates, weather, merge, join, timezone, dst, preprocessing]
+description: >
+  Merge a load CSV with a covariate CSV (e.g. weather data) into a single
+  training-ready CSV. Performs a LEFT JOIN on the datetime column (all load
+  rows preserved), with automatic timezone conversion and DST edge-case
+  handling: spring-forward gaps are forward-filled, and fall-back duplicate
+  local hours are resolved by keeping the first occurrence.
+
+  Use this before train_forecast_model when your load readings and weather
+  (or other covariates) live in separate files, especially across timezones.
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+inputs:
+  # --- Required ---
+  - name: load_csv_path
+    type: string
+    required: true
+    delivery_mode: file_reference
+    description: >
+      Path to the primary load CSV (local-time timestamps). This file is the
+      join anchor — all of its rows are preserved in the output.
+    example: "/data/building_33_load.csv"
+
+  - name: covariate_csv_path
+    type: string
+    required: true
+    delivery_mode: file_reference
+    description: >
+      Path to the covariate CSV to merge in (e.g. weather data).
+    example: "/data/building_33_weather.csv"
+
+  - name: output_csv_path
+    type: string
+    required: true
+    description: >
+      Destination path for the merged CSV. Parent directories are created
+      automatically.
+    example: "/data/building_33_merged.csv"
+
+  # --- Optional ---
+  - name: load_datetime_col
+    type: string
+    required: false
+    description: >
+      Datetime column name in the load CSV. Auto-detected if not provided
+      (first column whose name contains datetime/date/timestamp/time, else
+      the first column).
+    example: "timestamp"
+
+  - name: covariate_datetime_col
+    type: string
+    required: false
+    description: >
+      Datetime column name in the covariate CSV. Auto-detected if not provided
+      (same heuristic as load_datetime_col).
+    example: "date"
+
+  - name: covariate_columns
+    type: array
+    items: { type: string }
+    required: false
+    description: >
+      List of covariate column names to include from the covariate CSV.
+      All non-datetime columns are included if not provided.
+    example: ["temperature_2m", "relative_humidity_2m"]
+
+  - name: covariate_timezone
+    type: string
+    required: false
+    description: >
+      IANA timezone of the covariate file timestamps (e.g. "UTC",
+      "America/Los_Angeles"). If provided, covariate timestamps are converted
+      to the load file's local time before joining. No conversion when None.
+    example: "UTC"
+
+  - name: load_timezone
+    type: string
+    required: false
+    description: >
+      IANA timezone used to interpret load timestamps during timezone
+      conversion. REQUIRED when covariate_timezone is set; ignored otherwise.
+    example: "America/Los_Angeles"
+
+# ==============================================================================
+# OUTPUTS
+# ==============================================================================
+outputs:
+  success:
+    type: boolean
+    description: Whether the merge completed successfully.
+
+  error:
+    type: string
+    description: Error message if success=false.
+
+  output_csv_path:
+    type: string
+    description: Absolute path to the written merged CSV.
+
+  n_rows:
+    type: integer
+    description: Number of rows in the merged output (equals load row count).
+
+  covariate_columns:
+    type: array
+    items: { type: string }
+    description: List of covariate columns actually merged into the output.
+
+  n_missing_filled:
+    type: integer
+    description: >
+      Number of rows that had missing covariate values after the join and
+      were forward-filled (and back-filled as a last resort).
+
+  start_date:
+    type: string
+    format: datetime
+    description: Earliest load timestamp in the merged output.
+
+  end_date:
+    type: string
+    format: datetime
+    description: Latest load timestamp in the merged output.
+
+  timezone_conversion:
+    type: string
+    description: >
+      Human-readable description of the timezone conversion applied
+      (e.g. "UTC -> America/Los_Angeles"), or null if no conversion was done.
+
+  dst_duplicates_dropped:
+    type: integer
+    description: >
+      Number of DST fall-back duplicate local timestamps dropped from the
+      covariate file (kept first occurrence). 0 when no conversion applied.
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+notes:
+  - "LEFT JOIN on datetime — every load row is preserved; covariate gaps are filled"
+  - "Covariate gaps (DST spring-forward missing hour or end-of-file cutoff) are forward-filled"
+  - "DST fall-back duplicate local hours in the covariate file keep the first occurrence"
+  - "Datetime columns are auto-detected by name (datetime/date/timestamp/time) when omitted"
+  - "Set covariate_timezone AND load_timezone together to align cross-timezone files"
+  - "load_timezone is required whenever covariate_timezone is provided"
+  - "Run before train_forecast_model when load and weather live in separate files"
+  - "Use fetch_weather_forecast to obtain a covariate CSV, then merge it here"

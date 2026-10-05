@@ -218,3 +218,14 @@ __marimo__/
 .streamlit/secrets.toml
 
 .vscode/
+
+.DS_Store
+
+# Local runtime artifacts and OpenCode configuration
+/models/
+/opencode.json
+/.opencode/
+.opencode
+
+# Generated reports and other tool artifacts
+outputs/

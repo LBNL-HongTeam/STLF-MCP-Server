@@ -1,0 +1,180 @@
+# Batch Train Forecast Models Specification
+# For AlphaBuilding-Agents SpecRegistry and AI discovery
+
+id: forecasting.batch_train_forecast_models
+version: "1.0.0"
+mcp_server: load_forecasting
+mcp_tool: batch_train_forecast_models
+
+category: forecasting
+tags: [load_forecasting, batch, multi_series, fleet, feeders, training, darts]
+description: >
+  Train one forecasting model per series across many series in a single call.
+  Fans out train_forecast_model over a list of jobs, or over the target columns
+  of one wide CSV (e.g. an AMI export where each column is a meter/feeder/
+  substation).  Fault tolerant: a failure on one series is recorded and the
+  batch continues, returning a per-series summary so an operator can retry only
+  the failures.  Use this instead of calling train_forecast_model once per
+  feeder when you need to cover a whole fleet.
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+inputs:
+  # --- Mode 1: explicit job list ---
+  - name: jobs
+    type: array
+    required: false
+    description: >
+      Per-series job dicts (job-list mode). Each job supports: csv_path
+      (required), series_id (label), building_name, column_mapping, and per-job
+      overrides of model_type, lookback_hours, horizon_hours, frequency,
+      validation_split, probabilistic, quantiles. Missing keys fall back to the
+      batch-level defaults. Mutually exclusive with target_columns.
+    items:
+      type: object
+
+  # --- Mode 2: wide CSV expansion ---
+  - name: csv_path
+    type: string
+    required: false
+    delivery_mode: file_reference
+    description: >
+      Path to a wide CSV (wide-CSV mode). Combined with target_columns to train
+      one model per target column, sharing datetime_col and the shared covariate
+      lists.
+    example: "/data/ami_feeders_wide.csv"
+
+  - name: target_columns
+    type: array
+    required: false
+    items: { type: string }
+    description: Target column names to expand into one training job each (wide-CSV mode).
+    example: ["feeder_A", "feeder_B", "feeder_C"]
+
+  - name: datetime_col
+    type: string
+    required: false
+    description: Shared datetime column for wide-CSV mode.
+    example: "timestamp"
+
+  - name: shared_past_covariates
+    type: array
+    required: false
+    items: { type: string }
+    description: Past-covariate columns shared by every wide-CSV series.
+    example: ["temperature"]
+
+  - name: shared_future_covariates
+    type: array
+    required: false
+    items: { type: string }
+    description: Future-covariate columns shared by every wide-CSV series.
+    example: ["temperature_forecast"]
+
+  # --- Batch-level defaults ---
+  - name: model_type
+    type: string
+    required: false
+    default: "LinearRegression"
+    description: Default model type applied to every job unless overridden.
+
+  - name: lookback_hours
+    type: integer
+    required: false
+    default: 24
+    minimum: 1
+    maximum: 168
+
+  - name: horizon_hours
+    type: integer
+    required: false
+    default: 6
+    minimum: 1
+    maximum: 96
+
+  - name: frequency
+    type: string
+    required: false
+    default: "h"
+    enum: ["15min", "30min", "h"]
+
+  - name: validation_split
+    type: number
+    required: false
+    default: 0.2
+    minimum: 0.1
+    maximum: 0.3
+
+  - name: probabilistic
+    type: boolean
+    required: false
+    default: false
+    description: >
+      Default probabilistic (quantile) flag. Only valid for XGBoost, LSTM, TFT,
+      TiDE, TSMixer. Enables prediction intervals at inference time.
+
+  - name: quantiles
+    type: array
+    required: false
+    items: { type: number }
+    description: Default quantile levels when probabilistic (defaults to [0.1, 0.5, 0.9]).
+    example: [0.1, 0.5, 0.9]
+
+  - name: device
+    type: string
+    required: false
+    enum: ["cuda", "mps", "cpu", "auto"]
+    description: Default compute device for torch-backed models.
+
+  - name: continue_on_error
+    type: boolean
+    required: false
+    default: true
+    description: If true, keep training remaining series after a failure.
+
+# ==============================================================================
+# OUTPUTS
+# ==============================================================================
+outputs:
+  success:
+    type: boolean
+    description: Whether the batch ran (individual series may still have failed)
+
+  error:
+    type: string
+    description: Error message if the batch could not start
+
+  summary:
+    type: object
+    description: Aggregate counts for the batch
+    properties:
+      total: { type: integer }
+      succeeded: { type: integer }
+      failed: { type: integer }
+      failed_series: { type: array, items: { type: string } }
+
+  results:
+    type: array
+    description: Per-series outcome
+    items:
+      type: object
+      properties:
+        series_id: { type: string }
+        success: { type: boolean }
+        model_id: { type: string, description: "Trained model ID (on success)" }
+        model_type: { type: string }
+        validation_metrics: { type: object }
+        error: { type: string, description: "Failure reason (on error)" }
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+notes:
+  - "Provide EITHER jobs OR csv_path+target_columns, never both"
+  - "Wide-CSV mode is ideal for AMI exports: one column per meter/feeder/substation"
+  - "Each series trains an independent model saved to the registry with its own model_id"
+  - "Fault tolerant by default: one bad series does not abort the batch"
+  - "Use list_models afterwards to see all trained models"
+  - "Pair with batch_generate_forecast to run day-ahead forecasts across the fleet"
+  - "probabilistic=true requires XGBoost, LSTM, TFT, TiDE, or TSMixer"

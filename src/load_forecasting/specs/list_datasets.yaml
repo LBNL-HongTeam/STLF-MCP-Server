@@ -1,0 +1,131 @@
+# List Datasets Specification
+# For AlphaBuilding-Agents SpecRegistry and AI discovery
+
+id: forecasting.list_datasets
+version: "1.0.0"
+mcp_server: load_forecasting
+mcp_tool: list_datasets
+
+category: data_preparation
+tags: [discovery, datasets, files, sample_data]
+description: >
+  List CSV/Parquet datasets available to the server, each with an absolute
+  path and lightweight metadata (rows, columns, date range, inferred
+  frequency). Call this first when the user asks what data is available or
+  before guessing a csv_path. With no arguments it scans
+  LOAD_FORECASTING_DATA_DIR if set, otherwise the sample datasets bundled
+  with the server (data/examples in a source checkout).
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+inputs:
+  - name: directory
+    type: string
+    required: false
+    description: >
+      Directory to scan. Absolute, or relative to the same roots csv_path
+      resolves against (working directory, LOAD_FORECASTING_DATA_DIR,
+      repository root, bundled examples). Omit to scan the default location.
+    example: "data/examples/AMI"
+
+  - name: recursive
+    type: boolean
+    required: false
+    default: true
+    description: Descend into subdirectories (maximum depth 4)
+
+  - name: include_stats
+    type: boolean
+    required: false
+    default: true
+    description: >
+      Read each file's header and datetime column to report rows, columns,
+      date range and inferred frequency. Set false for a fast name-only
+      listing of a large directory.
+
+  - name: limit
+    type: integer
+    required: false
+    default: 50
+    minimum: 1
+    maximum: 500
+    description: Maximum number of files to return
+
+# ==============================================================================
+# OUTPUTS
+# ==============================================================================
+outputs:
+  success:
+    type: boolean
+
+  error:
+    type: string
+    description: Error message if success=false
+
+  directory:
+    type: string
+    description: Absolute path of the directory that was scanned
+
+  source:
+    type: string
+    enum: ["argument", "LOAD_FORECASTING_DATA_DIR", "bundled_examples"]
+    description: How the scanned directory was chosen
+
+  datasets:
+    type: array
+    description: One record per data file, sorted by relative path
+    items:
+      type: object
+      properties:
+        name: { type: string }
+        path: { type: string, description: Absolute path; pass verbatim as csv_path }
+        relative_path: { type: string, description: Path relative to `directory` }
+        format: { type: string, enum: ["csv", "parquet"] }
+        size_bytes: { type: integer }
+        size_mb: { type: number }
+        modified: { type: string, format: datetime }
+        columns: { type: array, items: { type: string } }
+        n_columns: { type: integer }
+        numeric_columns:
+          type: array
+          items: { type: string }
+          description: Candidate target/covariate columns (from a 200-row sample)
+        datetime_column: { type: string, description: Detected timestamp column, or null }
+        rows: { type: integer }
+        start: { type: string, format: datetime }
+        end: { type: string, format: datetime }
+        frequency:
+          type: string
+          enum: ["15min", "30min", "h"]
+          description: Inferred from median timestamp gap; null if not one of the supported frequencies
+        stats_error:
+          type: string
+          description: Present when statistics could not be computed (e.g. Parquet without pyarrow, file over 500 MB)
+
+  total_count:
+    type: integer
+    description: Number of matching files found (before limit)
+
+  returned:
+    type: integer
+    description: Number of records in `datasets`
+
+  truncated:
+    type: boolean
+    description: True when total_count exceeds limit
+
+  notes:
+    type: array
+    items: { type: string }
+    description: Guidance for the next step (which tool to call, wide-file handling, Parquet caveat)
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+notes:
+  - "Read-only; never modifies or moves files"
+  - "Statistics read only the header and the datetime column, so listing a directory of year-long hourly CSVs takes well under a second"
+  - "The forecasting tools read CSV only; Parquet files are listed so the agent can tell the user they exist, but must be converted first"
+  - "Wide CSVs (one column per meter/feeder) are natural inputs for batch_train_forecast_models"
+  - "Follow with inspect_data on the chosen file for gap analysis, quality flags and feature suggestions"
