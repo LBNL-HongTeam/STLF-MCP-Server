@@ -7,12 +7,11 @@ weather, train, tune, evaluate, backtest, and forecast electrical loads — and
 generate interactive HTML reports — through a standardized interface.
 
 Built on [Darts](https://github.com/unit8co/darts) for the modelling and
-[FastMCP](https://github.com/jlowin/fastmcp) for the server. Methodology aligns
-with Li et al. (2025), *Energy & Buildings* 344.
+[FastMCP](https://github.com/jlowin/fastmcp) for the server. A software
+article is in preparation; see [Citation](#citation).
 
 > **Version**: 0.1.0
-> **Python**: 3.11–3.12 (3.10 is not supported — numpy ≥ 2.3 requires 3.11;
-> 3.13 is not supported — numba/llvmlite incompatibility)
+> **Python**: 3.11–3.12
 
 ## 📑 Table of Contents
 
@@ -27,10 +26,13 @@ with Li et al. (2025), *Energy & Buildings* 344.
 - [Available Tools](#available-tools)
 - [Usage Examples](#usage-examples)
 - [Architecture](#architecture)
+- [Column Auto-Detection](#column-auto-detection)
 - [Agent Skills](#agent-skills)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
+- [Citation](#citation)
+- [License](#license)
 
 ## Overview
 
@@ -221,9 +223,8 @@ the LSTM, TFT, TiDE, TSMixer, and TimesFM models.
 ### Streamable HTTP Transport
 
 By default the server runs over **stdio**, which is what every MCP client config
-in this README uses. The server can also run over **streamable HTTP** — useful
-for the AlphaBuilding-Agents integration or connecting clients that expect an
-HTTP MCP endpoint.
+in this README uses. The server can also run over **streamable HTTP**, for
+clients that expect an HTTP MCP endpoint.
 
 ```bash
 python main.py --http        # port 8003 (default)
@@ -342,41 +343,44 @@ derives the JSON schema from it) and in the YAML specs under
    aggregates at city, substation and feeder level with matching Open-Meteo
    weather (`AMI/`).
 
-1. **Inspect the data** before training:
+1. **Inspect the data** before training. The calls below use the bundled
+   15-minute sample (`timestamp`, `electricity_kwh`, `outdoor_temp`):
 
    ```json
    {
      "tool": "inspect_data",
      "arguments": {
-       "csv_path": "data/building_33_hourly.csv",
-       "frequency": "h"
+       "csv_path": "data/examples/sample_building_load.csv",
+       "frequency": "15min"
      }
    }
    ```
 
-2. **Train a model**:
+2. **Train a model**. `train_forecast_model` returns a `model_id`; use that
+   value in the later calls (the ids below are placeholders):
 
    ```json
    {
      "tool": "train_forecast_model",
      "arguments": {
-       "csv_path": "data/building_33_hourly.csv",
+       "csv_path": "data/examples/sample_building_load.csv",
        "model_type": "XGBoost",
        "lookback_hours": 48,
        "horizon_hours": 24,
-       "building_name": "Building_33"
+       "building_name": "sample_building"
      }
    }
    ```
 
-3. **Evaluate the trained model**:
+3. **Evaluate the trained model**. Pass a held-out CSV when you have one.
+   Reusing the training file only checks that the call runs:
 
    ```json
    {
      "tool": "evaluate_forecast_model",
      "arguments": {
-       "model_id": "Building_33_XGBoost_20250124_143022",
-       "csv_path": "data/building_33_test.csv"
+       "model_id": "sample_building_XGBoost_20250124_143022",
+       "csv_path": "data/examples/sample_building_load.csv"
      }
    }
    ```
@@ -387,8 +391,8 @@ derives the JSON schema from it) and in the YAML specs under
    {
      "tool": "generate_forecast",
      "arguments": {
-       "model_id": "Building_33_XGBoost_20250124_143022",
-       "csv_path": "data/building_33_recent.csv",
+       "model_id": "sample_building_XGBoost_20250124_143022",
+       "csv_path": "data/examples/sample_building_load.csv",
        "horizon_hours": 24
      }
    }
@@ -403,7 +407,7 @@ with prediction bands:
 {
   "tool": "train_forecast_model",
   "arguments": {
-    "csv_path": "data/feeder.csv",
+    "csv_path": "data/examples/sample_building_load.csv",
     "model_type": "XGBoost",
     "lookback_hours": 48,
     "horizon_hours": 24,
@@ -417,8 +421,8 @@ with prediction bands:
 {
   "tool": "generate_forecast",
   "arguments": {
-    "model_id": "feeder_XGBoost_20250124_143022",
-    "csv_path": "data/feeder_recent.csv",
+    "model_id": "sample_building_XGBoost_20250124_143022",
+    "csv_path": "data/examples/sample_building_load.csv",
     "num_samples": 200
   }
 }
@@ -444,9 +448,9 @@ with prediction bands:
 {
   "tool": "merge_covariates",
   "arguments": {
-    "load_csv_path": "data/feeder_recent.csv",
+    "load_csv_path": "data/examples/sample_building_load.csv",
     "covariate_csv_path": "data/weather.csv",
-    "output_csv_path": "data/feeder_with_weather.csv"
+    "output_csv_path": "data/sample_with_weather.csv"
   }
 }
 ```
@@ -458,9 +462,9 @@ export:
 {
   "tool": "batch_train_forecast_models",
   "arguments": {
-    "csv_path": "data/ami_wide.csv",
-    "target_columns": ["feeder_A", "feeder_B", "feeder_C"],
-    "datetime_col": "timestamp",
+    "csv_path": "data/examples/AMI/2021_feeder_level-LENTS_substation.csv",
+    "target_columns": ["LENTS-HAPPY VALLEY (n=3345)", "LENTS-13101 (n=2119)"],
+    "datetime_col": "Datetime",
     "model_type": "XGBoost",
     "lookback_hours": 48,
     "horizon_hours": 24
@@ -474,9 +478,9 @@ export:
 {
   "tool": "generate_evaluation_report",
   "arguments": {
-    "model_id": "Building_33_XGBoost_20250124_143022",
-    "csv_path": "data/building_33_test.csv",
-    "output_html_path": "reports/building_33_eval.html"
+    "model_id": "sample_building_XGBoost_20250124_143022",
+    "csv_path": "data/examples/sample_building_load.csv",
+    "output_html_path": "outputs/reports/sample_building_eval.html"
   }
 }
 ```
@@ -515,6 +519,8 @@ The server follows a layered architecture:
 ```
 STLF-MCP-Server/
 ├── main.py                       # Entry point (stdio / HTTP transport)
+├── License.txt                   # Modified BSD license
+├── Copyright.txt                 # Copyright and government rights notice
 ├── src/load_forecasting/
 │   ├── server.py                 # FastMCP server + tool registration
 │   ├── core/                     # data_loader, trainer, evaluator,
@@ -524,14 +530,11 @@ STLF-MCP-Server/
 │   ├── specs/                    # YAML algorithm specs (agent discovery)
 │   └── reporting/                # Self-contained HTML report generation
 ├── skills/                       # Optional AI-agent workflow instructions
-├── models/                       # Trained models + registry.json (runtime)
-├── reports/                      # Generated HTML reports (runtime)
-└── tests/                        # Unit + integration tests
+├── data/examples/                # Bundled sample load and weather CSVs
+├── tests/                        # Unit + integration tests
+├── models/                       # Trained models + registry (runtime, gitignored)
+└── outputs/                      # Generated HTML reports (runtime, gitignored)
 ```
-
-See `AGENTS.md` for architecture internals and non-obvious gotchas (covariate
-handling, hours-vs-steps conversion, MPS/OpenMP caveats, spec/registry
-resolution).
 
 ## Column Auto-Detection
 
@@ -679,3 +682,49 @@ rules in its MCP `instructions`, which most hosts place in the model's context.
    ```
 
 5. Submit a pull request
+
+## Citation
+
+If you use STLF-MCP, please cite the software article. It is in preparation;
+replace this placeholder with the published citation once the paper is accepted.
+
+> Taoning Wang, Han Li, Tianzhen Hong. STLF-MCP: A model context protocol server for short-term electrical load forecasting. *Manuscript in preparation.*
+
+**BibTeX entry:**
+
+```bibtex
+@article{wang2026stlfmcp,
+  title={STLF-MCP: A model context protocol server for short-term electrical load forecasting},
+  author={Wang, Taoning and Li, Han and Hong, Tianzhen},
+  year={2026},
+  note={Manuscript in preparation}
+}
+```
+
+Forecasting defaults, the seasonal train/validation split, and the peak-day
+metrics (PMAPE, PTE) follow Li et al. (2025):
+
+> Han Li, Miguel Heleno, Wanni Zhang, Kaiyu Sun, Luis Rodriguez Garcia, Tianzhen Hong, A cross-dimensional analysis of data-driven short-term load forecasting methods with large-scale smart meter data, Energy and Buildings, Volume 344, 2025, 115909, https://doi.org/10.1016/j.enbuild.2025.115909.
+
+```bibtex
+@article{li2025cross,
+  title={A cross-dimensional analysis of data-driven short-term load forecasting methods with large-scale smart meter data},
+  author={Li, Han and Heleno, Miguel and Zhang, Wanni and Sun, Kaiyu and Rodriguez Garcia, Luis and Hong, Tianzhen},
+  journal={Energy and Buildings},
+  volume={344},
+  pages={115909},
+  year={2025},
+  doi={10.1016/j.enbuild.2025.115909},
+  url={https://doi.org/10.1016/j.enbuild.2025.115909}
+}
+```
+
+## License
+
+Short-Term Load Forecasting Model Context Protocol Server (STLF-MCP) Copyright (c) 2026, The Regents of the University of California, through Lawrence Berkeley National Laboratory (subject to receipt of any required approvals from the U.S. Dept. of Energy). All rights reserved.
+
+This software is distributed under a modified BSD license. See [License.txt](License.txt) for the full license text and [Copyright.txt](Copyright.txt) for the copyright notice.
+
+If you have questions about your rights to use or distribute this software, please contact Berkeley Lab's Intellectual Property Office at [IPO@lbl.gov](mailto:IPO@lbl.gov).
+
+**Government Rights Notice**: This Software was developed under funding from the U.S. Department of Energy and the U.S. Government consequently retains certain rights. As such, the U.S. Government has been granted for itself and others acting on its behalf a paid-up, nonexclusive, irrevocable, worldwide license in the Software to reproduce, distribute copies to the public, prepare derivative works, and perform publicly and display publicly, and to permit others to do so.
