@@ -94,6 +94,25 @@ inputs:
       Overview series longer than this are stride-downsampled for the
       browser; statistics always use the full data.
 
+  # --- Date window (contiguous) ---
+  - name: start_date
+    type: string
+    required: false
+    example: "2023-01-01"
+    description: >
+      Inclusive start of the rows to inspect ('YYYY-MM-DD' or
+      'YYYY-MM-DD HH:MM').
+
+  - name: end_date
+    type: string
+    required: false
+    example: "2023-10-31"
+    description: >
+      Inclusive end of the rows to inspect. A date-only value includes
+      that whole day. Every statistic, gap, outlier and blocking issue
+      then describes only the window, so bad data in an excluded period
+      does not block training.
+
 # ==============================================================================
 # OUTPUTS
 # ==============================================================================

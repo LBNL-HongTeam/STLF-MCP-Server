@@ -377,7 +377,13 @@ Surface all `ml_warnings` (short test window, interpolated NaNs, training-data o
 Complements §6: catches degradation over time and horizon-specific weaknesses that a single evaluate misses.
 
 - `stride_hours` defaults to `horizon` (non-overlapping windows). Reduce for finer temporal coverage at proportionally higher cost.
-- `start_fraction=0.2` skips the first 20 % (warm-up).
+- `start_fraction=0.2` skips the first 20 % (warm-up). Fine for a quick look at a whole file.
+- **To score a specific period, use dates instead of fractions.** `end_date` (and optionally `start_date`) restricts the data; `backtest_start_date` sets the first scored forecast, with earlier rows used only as context. Pass `start_fraction` *or* `backtest_start_date`, never both.
+  - Example — "2023 excluding November and December": `end_date="2023-10-31"`, `backtest_start_date="2023-01-09"`. A date-only `end_date` includes that whole day.
+  - The first forecast needs 168 h of real lag history plus the model's lookback. If `backtest_start_date` is too early the error names the earliest valid date: retry with it rather than guessing.
+  - If the file has history before the period, also pass `start_date`: the lag history then comes from before it and only the lookback is lost (e.g. `start_date="2023-01-01"` on a 2022–2023 file allows `backtest_start_date="2023-01-02"`).
+  - Windows are contiguous. Never ask the user to cut a period out of the middle of a CSV — missing timestamps are re-inserted and interpolated, so the gap would be scored on fabricated load. Run one backtest per contiguous period instead.
+- The same `start_date` / `end_date` are accepted by `inspect_data`, `generate_data_report`, `train_forecast_model`, `tune_model`, `evaluate_forecast_model` and both reports, so excluded bad data (e.g. a tail of missing meter readings) never blocks a call.
 - Enable `include_residual_analysis=True` and `peak_dates=[...]` when relevant.
 
 **Compute-cost warnings** — surface proactively:
@@ -463,13 +469,13 @@ Before declaring the task complete, verify every item:
 | `inspect_data` | EDA + validation pre-flight | `csv_path` | `column_mapping`, `frequency` | `ready_to_train`, `blocking_issues`, `quality_flags`, `columns` (incl. `unrecognised`, `future_covariate_candidates`, `target_excluded`, `categorical_code_columns`), `time_range`, `frequency` |
 | `merge_covariates` | Pairwise LEFT-JOIN load + covariate CSV | `load_csv_path`, `covariate_csv_path`, `output_csv_path` | `load_datetime_col`, `covariate_datetime_col`, `covariate_columns`, `covariate_timezone`, `load_timezone` | `n_rows`, `covariate_columns`, `n_missing_filled`, `dst_duplicates_dropped`, `timezone_conversion` |
 | `fetch_weather_forecast` | Pull Open-Meteo weather | `latitude`, `longitude` | `forecast_hours`, `past_hours`, `timezone`, `variables`/`preset`, `resolution` | weather rows + optional CSV write |
-| `train_forecast_model` | Single-fit training | `csv_path` | `model_type`, `lookback_hours`, `horizon_hours`, `frequency`, `validation_split`, `building_name`, `column_mapping`, `augment_weather_noise` | `model_id`, `model_path`, `training_metrics`, `validation_metrics`, `data_summary`, `training_info`, `ml_warnings` |
+| `train_forecast_model` | Single-fit training | `csv_path` | `model_type`, `lookback_hours`, `horizon_hours`, `frequency`, `validation_split`, `start_date`, `end_date`, `building_name`, `column_mapping`, `augment_weather_noise` | `model_id`, `model_path`, `training_metrics`, `validation_metrics`, `data_summary`, `training_info`, `ml_warnings` |
 | `tune_model` | Optuna HP search + final fit | `csv_path`, `model_type` | `n_trials`, `search_space`, `lookback_hours`, `horizon_hours` (cap 48) | above + `best_params`, `best_cv_rmse`, `all_trial_results` |
-| `evaluate_forecast_model` | Holdout evaluation | `model_id`, `csv_path` | `column_mapping`, `include_residual_analysis`, `peak_dates`, `output_csv_path` | `test_metrics`, `comparison_to_validation`, `predictions`, `peak_metrics`, `ml_warnings` |
-| `backtest_model` | Rolling-window backtest | `model_id`, `csv_path` | `stride_hours`, `start_fraction`, `include_residual_analysis`, `peak_dates` | `backtest_metrics`, `backtest_summary`, `predictions`, `peak_metrics` |
+| `evaluate_forecast_model` | Holdout evaluation | `model_id`, `csv_path` | `column_mapping`, `start_date`, `end_date`, `include_residual_analysis`, `peak_dates`, `output_csv_path` | `test_metrics`, `comparison_to_validation`, `predictions`, `peak_metrics`, `ml_warnings` |
+| `backtest_model` | Rolling-window backtest | `model_id`, `csv_path` | `stride_hours`, `start_fraction` **or** `backtest_start_date`, `start_date`, `end_date`, `include_residual_analysis`, `peak_dates` | `backtest_metrics`, `backtest_summary`, `predictions`, `peak_metrics` |
 | `generate_training_report` | Learning curves, train-vs-val metrics, split, compute, Optuna study; compares several models | `model_id` **or** `model_ids` | `output_html_path` (optional), `title` | `models[]` (`has_curve`, `best`, `final`, `flags`, `tuning`), `comparison.best_model_id` |
 | `generate_evaluation_report` | HTML report from evaluate | `model_id`, `csv_path`, `output_html_path` | `column_mapping`, `title` | `output_html_path`, `test_metrics` |
-| `generate_backtest_report` | HTML report from backtest (richer) | `model_id`, `csv_path`, `output_html_path` | `stride_hours`, `start_fraction`, `peak_dates`, `title` | `output_html_path`, `backtest_metrics`, h-step curves |
+| `generate_backtest_report` | HTML report from backtest (richer) | `model_id`, `csv_path`, `output_html_path` | `stride_hours`, `start_fraction` **or** `backtest_start_date`, `start_date`, `end_date`, `peak_dates`, `title` | `output_html_path`, `backtest_metrics`, h-step curves |
 | `generate_inference_dashboard` | HTML forecast dashboard | `model_id`, `csv_path`, `output_html_path`, `latitude`, `longitude` | `column_mapping`, `horizon_hours` | dashboard HTML |
 | `generate_forecast` | One-shot forward inference | `model_id`, `csv_path` | `column_mapping`, `horizon_hours`, `output_csv_path` | `predictions`, `forecast_start/end`, `context_summary` |
 | `batch_train_forecast_models` | One model per series across a wide CSV or job list | `csv_path`+`target_columns` **or** `jobs` | `shared_past_covariates`, `shared_future_covariates`, `datetime_col`, `model_type`, `lookback_hours`, `horizon_hours`, `probabilistic`, `device`, `continue_on_error` | per-series `model_id`, metrics, failures |

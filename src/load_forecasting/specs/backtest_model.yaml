@@ -69,6 +69,8 @@ inputs:
       Fraction of the series to skip before starting the rolling forecast.
       Ensures the model has enough historical context to warm up (lag features,
       seasonality). Default 0.2 means the first 20% of the series is skipped.
+      Applied only when backtest_start_date is not given; passing both is an
+      error. Prefer backtest_start_date to score a specific period.
 
   # --- Output Options ---
   - name: return_predictions
@@ -118,6 +120,46 @@ inputs:
       healthy-looking overall number. Ignored for point models, which pay no
       extra cost.
 
+  # --- Date window (contiguous) ---
+  - name: start_date
+    type: string
+    required: false
+    example: "2023-01-01"
+    description: >
+      Inclusive start of the rows to use ('YYYY-MM-DD' or 'YYYY-MM-DD
+      HH:MM'). Rows before it are not scored or trained on, but up to
+      the longest lag (168 h by default) is still read so lag features
+      at the start of the window are computed from real history.
+
+  - name: end_date
+    type: string
+    required: false
+    example: "2023-10-31"
+    description: >
+      Inclusive end of the rows to use. A date-only value ('YYYY-MM-DD')
+      includes that whole day, so '2023-10-31' keeps everything through
+      23:00 and drops November-December. A value with a time
+      ('YYYY-MM-DD HH:MM') is inclusive of that instant. Naive values
+      are read in the CSV's own clock; add a UTC offset to anchor them
+      otherwise. Rows after it are dropped before any validation, so bad
+      data in an excluded tail cannot fail the call. Only a contiguous
+      window is supported; to skip a mid-series period, run two
+      backtests.
+
+  - name: backtest_start_date
+    type: string
+    required: false
+    example: "2023-01-09"
+    description: >
+      Timestamp of the first forecast to score, as an alternative to
+      start_fraction (pass one or the other, not both). Earlier rows are
+      used only as model context. It must leave enough history for the
+      lag features (168 h by default) plus the model's lookback; when it
+      does not, the error names the earliest valid date. With start_date
+      set and earlier history in the file, the lag history comes from
+      before start_date, so only the lookback is needed. Use it to score
+      as much of a period as possible with an already-trained model.
+
 # ==============================================================================
 # OUTPUTS
 # ==============================================================================
@@ -166,9 +208,27 @@ outputs:
       n_windows: { type: integer, description: "Number of forecast windows evaluated" }
       stride_hours: { type: integer }
       stride_steps: { type: integer, description: "Stride in data steps" }
-      start_fraction: { type: number }
-      backtest_start_date: { type: string, format: datetime }
+      start_mode:
+        type: string
+        enum: ["fraction", "date"]
+        description: "Whether the first forecast came from start_fraction or backtest_start_date"
+      start_fraction: { type: number, description: "null when start_mode is 'date'" }
+      backtest_start_date: { type: string, format: datetime, description: "Timestamp of the first scored forecast" }
       backtest_end_date: { type: string, format: datetime }
+      requested_backtest_start_date: { type: string, description: "As passed (start_mode 'date' only)" }
+      earliest_valid_backtest_start_date: { type: string, format: datetime, description: "Earliest first forecast the data allows (start_mode 'date' only)" }
+      date_window:
+        type: object
+        description: "Present when start_date/end_date was given"
+        properties:
+          start_date: { type: string }
+          end_date: { type: string }
+          rows_in_window: { type: integer }
+          rows_excluded: { type: integer }
+          first_timestamp: { type: string, format: datetime }
+          last_timestamp: { type: string, format: datetime }
+          file_start: { type: string, format: datetime }
+          file_end: { type: string, format: datetime }
       total_samples: { type: integer }
       column_mapping_source:
         type: string
@@ -264,6 +324,9 @@ notes:
   - "Backtest uses retrain=False — model weights do not change during backtesting"
   - "stride_hours < horizon_hours produces overlapping windows (more points, correlated errors)"
   - "start_fraction=0.2 ensures 20% of data is used as warm-up before rolling starts"
+  - "To score a specific period, combine end_date (and optionally start_date) with backtest_start_date, e.g. 2023 excluding Nov-Dec: end_date='2023-10-31', backtest_start_date='2023-01-09'"
+  - "If backtest_start_date is too early the error names the earliest valid date; retry with that value"
+  - "start_date/end_date select one contiguous window; do not cut a mid-series period out of a CSV, because missing timestamps are re-inserted and interpolated"
   - "CV-RMSE difference vs validation > 5pp suggests distributional shift in this period"
   - "Predictions array can be large; use output_csv_path for long series"
   - "Unlike evaluate_forecast_model, backtest_model allows custom start position and stride"

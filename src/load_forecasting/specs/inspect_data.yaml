@@ -56,6 +56,25 @@ inputs:
       Expected data frequency. If omitted, the tool infers it from the
       timestamps and reports whether it matches any supported frequency.
 
+  # --- Date window (contiguous) ---
+  - name: start_date
+    type: string
+    required: false
+    example: "2023-01-01"
+    description: >
+      Inclusive start of the rows to inspect ('YYYY-MM-DD' or
+      'YYYY-MM-DD HH:MM').
+
+  - name: end_date
+    type: string
+    required: false
+    example: "2023-10-31"
+    description: >
+      Inclusive end of the rows to inspect. A date-only value includes
+      that whole day. Every statistic, gap, outlier and blocking issue
+      then describes only the window, so bad data in an excluded period
+      does not block training.
+
 # ==============================================================================
 # OUTPUTS
 # ==============================================================================

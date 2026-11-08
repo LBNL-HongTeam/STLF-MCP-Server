@@ -304,6 +304,8 @@ def train_forecast_model(
     probabilistic: bool = False,
     quantiles: Optional[list] = None,
     model_kwargs: Optional[dict] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> dict:
     """
     Train a forecasting model on historical building load data.
@@ -366,6 +368,13 @@ def train_forecast_model(
             use the tool's own parameters for those.  Use tune_model instead
             when the aim is to search over these values rather than to set
             them.
+        start_date: Optional inclusive start of the training rows
+            ('YYYY-MM-DD' or 'YYYY-MM-DD HH:MM').  Earlier rows are used only
+            as lag-feature history.  The train/validation split is made
+            inside the window.
+        end_date: Optional inclusive end of the training rows.  A date-only
+            value includes that whole day.  Rows after it are ignored,
+            including by the pre-flight inspection.
 
     Returns:
         Dict with model_id, metrics, and data summary
@@ -429,6 +438,8 @@ def train_forecast_model(
             csv_path=csv_path,
             column_mapping=column_mapping,
             frequency=frequency,
+            start_date=start_date,
+            end_date=end_date,
         )
         if not inspection.get("success"):
             return create_error_response(
@@ -446,6 +457,8 @@ def train_forecast_model(
                 csv_path=csv_path,
                 column_mapping=column_mapping,
                 frequency=frequency,
+                start_date=start_date,
+                end_date=end_date,
             )
         except DataLoadError as e:
             return create_error_response(str(e))

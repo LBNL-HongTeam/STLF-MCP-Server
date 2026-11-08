@@ -18,6 +18,7 @@ from ..core.data_loader import (
     REDUNDANT_CALENDAR_PATTERNS,
     CATEGORICAL_CODE_PATTERNS,
 )
+from ..core.date_window import DateWindow, DateWindowError, describe_window, filter_frame
 from ..core.frequency_utils import hours_to_steps, FREQ_TO_STEPS_PER_HOUR
 from ..core.paths import resolve_data_path, not_found_hint
 from ._common import (
@@ -32,6 +33,8 @@ def inspect_data(
     csv_path: str,
     column_mapping: Optional[dict] = None,
     frequency: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> dict:
     """
     Inspect a CSV file and report everything an agent needs before training.
@@ -46,10 +49,17 @@ def inspect_data(
             past_covariates).  Auto-detected if not provided.
         frequency: Expected data frequency ('15min', '30min', 'h').  If
             omitted, the tool infers it from the timestamps.
+        start_date: Optional inclusive start of the rows to inspect
+            ('YYYY-MM-DD' or 'YYYY-MM-DD HH:MM').
+        end_date: Optional inclusive end of the rows to inspect.  A date-only
+            value includes that whole day.  Every statistic, gap, outlier and
+            blocking issue then describes only the window, so bad data in an
+            excluded period does not block training.
 
     Returns:
         Dict with detected columns, frequency, statistics, gap analysis,
-        quality flags, and feature suggestions.
+        quality flags, and feature suggestions.  Includes ``date_window``
+        (rows kept/excluded) when start_date or end_date is given.
     """
     try:
         path = resolve_data_path(csv_path)
@@ -70,6 +80,40 @@ def inspect_data(
 
         if raw_df.empty:
             return create_error_response("CSV file is empty.")
+
+        # ------------------------------------------------------------------
+        # Optional date window: inspect only the requested rows
+        # ------------------------------------------------------------------
+        date_window_info: Optional[dict] = None
+        try:
+            window = DateWindow.from_args(start_date, end_date)
+        except DateWindowError as e:
+            return create_error_response(str(e))
+        if window is not None:
+            window_dt_col = (column_mapping or {}).get("datetime") or auto_detect_columns(
+                raw_df
+            ).get("datetime")
+            if not window_dt_col or window_dt_col not in raw_df.columns:
+                return create_error_response(
+                    "Cannot apply start_date/end_date: no datetime column was detected. "
+                    "Pass column_mapping={'datetime': '<column_name>', ...}."
+                )
+            n_rows_file = len(raw_df)
+            file_times = pd.to_datetime(raw_df[window_dt_col], utc=True, errors="coerce")
+            raw_df = filter_frame(raw_df, window_dt_col, window).reset_index(drop=True)
+            kept = pd.DatetimeIndex(
+                pd.to_datetime(raw_df[window_dt_col], utc=True, errors="coerce")
+            )
+            date_window_info = describe_window(
+                window, kept, rows_before=n_rows_file,
+                file_start=file_times.min(), file_end=file_times.max(),
+            )
+            if raw_df.empty:
+                return create_error_response(
+                    f"No rows fall inside start_date={start_date!r}, end_date={end_date!r}. "
+                    f"The data spans {date_window_info['file_start']} to "
+                    f"{date_window_info['file_end']}."
+                )
 
         n_rows_raw = len(raw_df)
         columns_in_file = raw_df.columns.tolist()
@@ -699,6 +743,7 @@ def inspect_data(
             ready_to_train=ready_to_train,
             blocking_issues=blocking,
             loader_error=loader_error,
+            **({"date_window": date_window_info} if date_window_info else {}),
         )
 
     except Exception as e:

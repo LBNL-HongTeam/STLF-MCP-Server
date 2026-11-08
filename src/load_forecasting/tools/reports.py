@@ -47,6 +47,8 @@ def generate_evaluation_report(
     include_residual_analysis: bool = True,
     peak_dates: Optional[list] = None,
     title: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> dict:
     """
     Generate a self-contained HTML evaluation report for a trained model.
@@ -72,6 +74,9 @@ def generate_evaluation_report(
             When provided, a Peak Metrics section is added to the HTML
             report and ``peak_metrics`` is added to the tool response.
         title: Optional human-friendly title for the report header.
+        start_date: Optional inclusive start of the test rows to use.
+        end_date: Optional inclusive end of the test rows (a date-only value
+            includes that whole day).
 
     Returns:
         Dict with output_html_path, file_size_bytes, n_points, model_id,
@@ -98,6 +103,8 @@ def generate_evaluation_report(
             output_csv_path=None,
             include_residual_analysis=include_residual_analysis,
             peak_dates=peak_dates,
+            start_date=start_date,
+            end_date=end_date,
         )
         if not eval_result.get("success"):
             return create_error_response(
@@ -135,6 +142,8 @@ def generate_evaluation_report(
                 frequency=frequency,
                 add_calendar_features=False,
                 lag_hours=[],
+                start_date=start_date,
+                end_date=end_date,
             )
             input_df = preview_loader.df
             # Make sure resolved_mapping reflects what the loader detected
@@ -185,11 +194,14 @@ def generate_backtest_report(
     output_html_path: str,
     column_mapping: Optional[dict] = None,
     stride_hours: Optional[int] = None,
-    start_fraction: float = 0.2,
+    start_fraction: Optional[float] = None,
     include_residual_analysis: bool = True,
     peak_dates: Optional[list] = None,
     title: Optional[str] = None,
     num_samples: int = 200,
+    backtest_start_date: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> dict:
     """
     Generate a self-contained HTML backtest report for a trained model.
@@ -220,7 +232,15 @@ def generate_backtest_report(
         stride_hours: Step size between re-forecast windows in hours.  Defaults
             to the model's training horizon (non-overlapping windows).
         start_fraction: Fraction of the series to skip before starting the
-            rolling forecast.  Must be between 0.1 and 0.5.  Default: 0.2.
+            rolling forecast.  Must be between 0.1 and 0.5.  Default: 0.2 when
+            backtest_start_date is not given.  Mutually exclusive with
+            backtest_start_date.
+        backtest_start_date: Timestamp of the first forecast to score, as an
+            alternative to start_fraction.  Must leave lag-feature history
+            plus the model's lookback; the error names the earliest valid date.
+        start_date: Optional inclusive start of the data to use.
+        end_date: Optional inclusive end of the data to use (a date-only value
+            includes that whole day).
         include_residual_analysis: If True, compute and include mean/std
             residual and lag-1 autocorrelation statistics.
         peak_dates: Optional list of date strings ("YYYY-MM-DD") identifying
@@ -254,6 +274,9 @@ def generate_backtest_report(
                 peak_dates=peak_dates,
                 reconstruct_windows=True,
                 num_samples=num_samples,
+                backtest_start_date=backtest_start_date,
+                start_date=start_date,
+                end_date=end_date,
             )
         except _ModelLoadError as e:
             return e.response
@@ -300,6 +323,8 @@ def generate_backtest_report(
                 frequency=frequency,
                 add_calendar_features=False,
                 lag_hours=[],
+                start_date=start_date,
+                end_date=end_date,
             )
             input_df = preview_loader.df
         except Exception as e:
@@ -643,6 +668,8 @@ def generate_data_report(
     covariates: Optional[list] = None,
     title: Optional[str] = None,
     max_points: int = 60000,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> dict:
     """
     Generate a self-contained HTML report that visualises a load CSV before
@@ -676,6 +703,10 @@ def generate_data_report(
         title: Report title.
         max_points: Overview series longer than this are stride-downsampled
             for the browser; all statistics still use the full data.
+        start_date: Optional inclusive start of the rows to show.
+        end_date: Optional inclusive end of the rows to show (a date-only
+            value includes that whole day).  Statistics, the split preview and
+            quality findings then cover only the window.
 
     Returns:
         Dict with output_html_path, file_size_bytes, n_rows, frequency,
@@ -706,7 +737,10 @@ def generate_data_report(
         out_path = Path(output_html_path)
 
         # Numeric profile first: it also resolves the frequency and mapping.
-        inspection = inspect_data(csv_path, column_mapping=column_mapping, frequency=frequency)
+        inspection = inspect_data(
+            csv_path, column_mapping=column_mapping, frequency=frequency,
+            start_date=start_date, end_date=end_date,
+        )
         if not inspection.get("success"):
             return create_error_response(f"inspect_data failed: {inspection.get('error')}")
         resolved_frequency = frequency or (inspection.get("frequency") or {}).get("inferred") or "h"
@@ -718,6 +752,8 @@ def generate_data_report(
                 frequency=resolved_frequency,
                 add_calendar_features=False,
                 lag_hours=[],
+                start_date=start_date,
+                end_date=end_date,
             )
         except DataLoadError as e:
             return create_error_response(str(e))

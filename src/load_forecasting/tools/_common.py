@@ -428,6 +428,8 @@ def _load_and_scale_series(
     frequency: str,
     dataframe=None,
     metadata: Optional[dict] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> tuple:
     """
     Load a CSV (or pre-loaded DataFrame) and apply pre-trained scalers.
@@ -448,6 +450,9 @@ def _load_and_scale_series(
             columns are validated against the training covariate set before the
             fitted scalers are applied, so a mismatch produces a readable error
             instead of an opaque sklearn feature-count failure.
+        start_date: Optional inclusive start of the rows to use (see
+            ForecastingDataLoader).
+        end_date: Optional inclusive end of the rows to use.
 
     Returns:
         Tuple of (loader, target_series, past_covariate_series or None,
@@ -462,6 +467,8 @@ def _load_and_scale_series(
         column_mapping=column_mapping,
         frequency=frequency,
         dataframe=dataframe,
+        start_date=start_date,
+        end_date=end_date,
     )
     if metadata is not None:
         cov_err = _check_covariate_mismatch(loader, metadata)

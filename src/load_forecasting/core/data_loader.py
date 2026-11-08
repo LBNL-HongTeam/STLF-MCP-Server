@@ -26,6 +26,7 @@ from darts.dataprocessing.transformers import MissingValuesFiller, Scaler
 from .spec_loader import get_auto_detect_patterns
 from .paths import resolve_data_path, not_found_hint
 from .frequency_utils import  hours_to_steps
+from .date_window import DateWindow, DateWindowError, describe_window
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +219,8 @@ class ForecastingDataLoader:
         add_calendar_features: bool = True,
         lag_hours: Optional[list] = None,
         dataframe: Optional[pd.DataFrame] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
     ):
         """
         Initialize data loader.
@@ -245,6 +248,13 @@ class ForecastingDataLoader:
             dataframe: Pre-loaded DataFrame to use instead of reading
                 ``csv_path`` from disk.  When provided, ``csv_path`` is still
                 recorded for metadata purposes but the file is not re-read.
+            start_date: Optional inclusive start of the rows to keep
+                ('YYYY-MM-DD' or 'YYYY-MM-DD HH:MM').  History before it is
+                still used to compute lag features, then dropped.
+            end_date: Optional inclusive end of the rows to keep.  A date-only
+                value keeps that whole day.  Rows after it are dropped before
+                any validation, so bad data in an excluded tail cannot fail
+                the load.  See :mod:`load_forecasting.core.date_window`.
 
         Raises:
             DataLoadError: If the file is not found, cannot be parsed,
@@ -258,6 +268,14 @@ class ForecastingDataLoader:
         self.max_gap = pd.Timedelta(max_gap)
         self.add_calendar_features = add_calendar_features
         self.lag_hours = lag_hours if lag_hours is not None else _DEFAULT_LAG_HOURS
+        try:
+            self.date_window: Optional[DateWindow] = DateWindow.from_args(start_date, end_date)
+        except DateWindowError as e:
+            raise DataLoadError(str(e))
+        self.date_window_info: Optional[dict] = None
+        # First timestamp whose lag features are computed from real history
+        # (not forward-filled).  None when no lag features are added.
+        self.lag_warmup_until: Optional[pd.Timestamp] = None
 
         if dataframe is not None:
             # Caller already has the DataFrame — skip disk I/O entirely.
@@ -302,6 +320,7 @@ class ForecastingDataLoader:
         # sparse data is rejected rather than silently filled.
         # ------------------------------------------------------------------
         self._preprocess_pre_interp()
+        self._apply_date_window_early()
         self._validate_target_coverage()  # must run before _interpolate_gaps
         self._finish_preprocess()
 
@@ -323,6 +342,9 @@ class ForecastingDataLoader:
 
         if self.lag_hours:
             self._add_lag_features()
+
+        # Trim the lag-history buffer kept before start_date.
+        self._apply_date_window_final()
 
         # ------------------------------------------------------------------
         # Scalers (fit during training, reuse during evaluation)
@@ -536,6 +558,59 @@ class ForecastingDataLoader:
                     "Either clean the data or switch to missing_value_strategy='interpolate'."
                 )
 
+    # ------------------------------------------------------------------
+    # Date window (start_date / end_date)
+    # ------------------------------------------------------------------
+
+    def _lag_buffer(self) -> Optional[pd.Timedelta]:
+        """History to keep before start_date so lag features use real data."""
+        if not self.lag_hours:
+            return None
+        return pd.Timedelta(hours=max(self.lag_hours))
+
+    def _apply_date_window_early(self) -> None:
+        """Drop rows outside the window (plus lag buffer) before validation.
+
+        Runs right after datetime parsing so coverage, interpolation and
+        non-negativity checks only see rows the caller asked for.  Rows before
+        ``start_date`` within the longest lag are kept for now and trimmed in
+        :py:meth:`_apply_date_window_final` after lag features are built.
+        """
+        if self.date_window is None:
+            return
+        self._window_rows_before = len(self.df)
+        self._window_file_start = self.df.index.min()
+        self._window_file_end = self.df.index.max()
+        keep = self.date_window.mask(self.df.index, start_offset=self._lag_buffer())
+        self.df = self.df.loc[keep]
+        if self.df.empty or not self.date_window.mask(self.df.index).any():
+            raise DataLoadError(
+                f"No rows fall inside start_date={self.date_window.start_date!r}, "
+                f"end_date={self.date_window.end_date!r}. The data spans "
+                f"{self._window_file_start.isoformat()} to "
+                f"{self._window_file_end.isoformat()}."
+            )
+
+    def _apply_date_window_final(self) -> None:
+        """Trim to the exact window once features have been computed."""
+        if self.date_window is None:
+            return
+        self.df = self.df.loc[self.date_window.mask(self.df.index)]
+        self.date_window_info = describe_window(
+            self.date_window,
+            self.df.index,
+            rows_before=self._window_rows_before,
+            file_start=self._window_file_start,
+            file_end=self._window_file_end,
+        )
+        logger.info(
+            "Date window applied: kept %d of %d rows (%s to %s)",
+            self.date_window_info["rows_in_window"],
+            self._window_rows_before,
+            self.date_window_info["first_timestamp"],
+            self.date_window_info["last_timestamp"],
+        )
+
     def _interpolate_gaps(self) -> None:
         """Interpolate small gaps; warn (do not fill) on large gaps."""
         time_diff = self.df.index.to_series().diff()
@@ -655,6 +730,10 @@ class ForecastingDataLoader:
                 target_mean = self.df[target_col].mean()
                 self.df[col_name] = self.df[col_name].fillna(target_mean)
             added.append(col_name)
+
+        if self.lag_hours and len(self.df):
+            # Before this instant at least one lag is forward-filled, not real.
+            self.lag_warmup_until = self.df.index[0] + pd.Timedelta(hours=max(self.lag_hours))
 
         if added:
             logger.info("Added lag features: %s", self._extend_past_covariates(added))
@@ -836,6 +915,7 @@ class ForecastingDataLoader:
             "target_std": float(series.std()),
             "target_min": float(series.min()),
             "target_max": float(series.max()),
+            **({"date_window": self.date_window_info} if getattr(self, "date_window_info", None) else {}),
         }
 
     # ------------------------------------------------------------------
