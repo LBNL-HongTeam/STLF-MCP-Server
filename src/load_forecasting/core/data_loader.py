@@ -722,13 +722,15 @@ class ForecastingDataLoader:
             # Note: bfill was used previously but introduced temporal leakage for
             # short series by filling early NaN values with future observations.
             self.df[col_name] = self.df[col_name].ffill()
-            # Fallback: if the entire column is still NaN (context shorter
-            # than the lag offset), fill with the target mean. This is the
-            # best "no-information" estimate and prevents NaN from
-            # propagating into the feature matrix during inference.
+            # The first lag_steps rows have no value lag_steps earlier, and
+            # ffill cannot fill a leading run. Fill them with the first
+            # observed target value, which precedes every row it fills. A
+            # whole-series statistic such as the mean would leak later
+            # (validation or test) values into these warm-up rows.
             if self.df[col_name].isna().any():
-                target_mean = self.df[target_col].mean()
-                self.df[col_name] = self.df[col_name].fillna(target_mean)
+                first_obs = self.df[target_col].dropna()
+                if len(first_obs):
+                    self.df[col_name] = self.df[col_name].fillna(first_obs.iloc[0])
             added.append(col_name)
 
         if self.lag_hours and len(self.df):
