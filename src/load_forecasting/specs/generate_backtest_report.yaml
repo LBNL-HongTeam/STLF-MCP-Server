@@ -79,7 +79,8 @@ inputs:
     description: >
       Fraction of the series to skip before starting the rolling forecast,
       allowing the model to warm up (lag features, seasonality). Default 0.2
-      skips the first 20% of the series.
+      skips the first 20% of the series. Applied only when
+      backtest_start_date is not given; passing both is an error.
 
   - name: include_residual_analysis
     type: boolean
@@ -117,6 +118,44 @@ inputs:
       under-covered), an interval-width-by-horizon chart, and per-quantile
       pinball loss — plus a shaded prediction band on the forecast-playback
       chart. Ignored for point models.
+
+  # --- Date window (contiguous) ---
+  - name: start_date
+    type: string
+    required: false
+    example: "2023-01-01"
+    description: >
+      Inclusive start of the rows to use ('YYYY-MM-DD' or 'YYYY-MM-DD
+      HH:MM'). Rows before it are not scored or trained on, but up to
+      the longest lag (168 h by default) is still read so lag features
+      at the start of the window are computed from real history.
+
+  - name: end_date
+    type: string
+    required: false
+    example: "2023-10-31"
+    description: >
+      Inclusive end of the rows to use. A date-only value ('YYYY-MM-DD')
+      includes that whole day, so '2023-10-31' keeps everything through
+      23:00 and drops November-December. A value with a time
+      ('YYYY-MM-DD HH:MM') is inclusive of that instant. Naive values
+      are read in the CSV's own clock; add a UTC offset to anchor them
+      otherwise. Rows after it are dropped before any validation, so bad
+      data in an excluded tail cannot fail the call.
+
+  - name: backtest_start_date
+    type: string
+    required: false
+    example: "2023-01-09"
+    description: >
+      Timestamp of the first forecast to score, as an alternative to
+      start_fraction (pass one or the other, not both). Earlier rows are
+      used only as model context. It must leave enough history for the
+      lag features (168 h by default) plus the model's lookback; when it
+      does not, the error names the earliest valid date. With start_date
+      set and earlier history in the file, the lag history comes from
+      before start_date, so only the lookback is needed. Use it to score
+      as much of a period as possible with an already-trained model.
 
 # ==============================================================================
 # OUTPUTS
@@ -180,9 +219,13 @@ outputs:
       n_windows: { type: integer }
       stride_hours: { type: integer }
       stride_steps: { type: integer }
-      start_fraction: { type: number }
+      start_mode: { type: string, enum: ["fraction", "date"] }
+      start_fraction: { type: number, description: "null when start_mode is 'date'" }
       backtest_start_date: { type: string, format: datetime }
       backtest_end_date: { type: string, format: datetime }
+      requested_backtest_start_date: { type: string }
+      earliest_valid_backtest_start_date: { type: string, format: datetime }
+      date_window: { type: object, description: "Rows kept/excluded; present when start_date/end_date was given (same shape as backtest_model)" }
       total_samples: { type: integer }
 
   peak_metrics:
@@ -213,6 +256,7 @@ notes:
   - "Use backtest_model instead if you only need the metrics as JSON (no HTML)"
   - "stride_hours < horizon_hours produces overlapping windows (more points, correlated errors)"
   - "start_fraction=0.2 ensures 20% of data is used as warm-up before rolling starts"
+  - "To report on a specific period, combine end_date (and optionally start_date) with backtest_start_date; if the date is too early the error names the earliest valid one"
   - "Backtest uses retrain=False — model weights do not change during backtesting"
   - "Use peak_dates with paper windows to compute PMAPE and PTE alongside aggregate metrics"
   - "For quantile-trained models the playback chart shades the widest central band (e.g. P5-P95) per re-forecast window"

@@ -229,3 +229,6 @@ __marimo__/
 
 # Generated reports and other tool artifacts
 outputs/
+
+# Merged load + weather files written by the paper scripts and tests
+data/examples/AMI/_merged_*.csv

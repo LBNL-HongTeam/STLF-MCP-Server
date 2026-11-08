@@ -84,6 +84,8 @@ def evaluate_forecast_model(
     include_residual_analysis: bool = False,
     peak_dates: Optional[list] = None,
     num_samples: int = 200,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> dict:
     """
     Evaluate a trained model on test data.
@@ -105,6 +107,11 @@ def evaluate_forecast_model(
             with probabilistic=True.  Drives the pinball-loss / coverage /
             interval-width metrics reported under ``probabilistic_metrics``.
             Ignored for point models (default 200).
+        start_date: Optional inclusive start of the test rows to use
+            ('YYYY-MM-DD' or 'YYYY-MM-DD HH:MM').  Earlier rows are used only
+            as lag-feature history.
+        end_date: Optional inclusive end of the test rows.  A date-only value
+            includes that whole day (end_date='2023-10-31' stops at 23:00).
 
     Returns:
         Dict with test metrics and predictions.  For probabilistic models a
@@ -135,6 +142,8 @@ def evaluate_forecast_model(
                 csv_path=csv_path,
                 column_mapping=column_mapping,
                 frequency=frequency,
+                start_date=start_date,
+                end_date=end_date,
             )
         except DataLoadError as e:
             return create_error_response(str(e))
@@ -213,6 +222,8 @@ def evaluate_forecast_model(
             "end_date": loader.df.index.max().isoformat(),
             "column_mapping_source": column_mapping_source,
         }
+        if loader.date_window_info:
+            test_summary["date_window"] = loader.date_window_info
 
         # Build response
         response_data = {

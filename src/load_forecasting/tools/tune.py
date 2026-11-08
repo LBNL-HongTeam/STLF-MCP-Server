@@ -57,6 +57,8 @@ def tune_model(
     building_name: Optional[str] = None,
     column_mapping: Optional[dict] = None,
     device: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> dict:
     """
     Hyperparameter-tune a model using Optuna and register the best result.
@@ -89,6 +91,13 @@ def tune_model(
             (NVIDIA GPU), "mps" (Apple Silicon GPU), "cpu", or "auto"/None to
             auto-detect (priority: cuda > mps > cpu). Applied to every trial and
             to the final model training. Ignored by CPU-only models.
+        start_date: Optional inclusive start of the training rows
+            ('YYYY-MM-DD' or 'YYYY-MM-DD HH:MM').  Earlier rows are used only
+            as lag-feature history.  The train/validation split is made
+            inside the window.
+        end_date: Optional inclusive end of the training rows.  A date-only
+            value includes that whole day.  Rows after it are ignored,
+            including by the pre-flight inspection.
 
     Returns:
         Dict with best_params, best_cv_rmse, all_trial_results, model_id,
@@ -164,6 +173,8 @@ def tune_model(
             csv_path=csv_path,
             column_mapping=column_mapping,
             frequency=frequency,
+            start_date=start_date,
+            end_date=end_date,
         )
         if not inspection.get("success"):
             return create_error_response(
@@ -183,6 +194,8 @@ def tune_model(
                 csv_path=csv_path,
                 column_mapping=column_mapping,
                 frequency=frequency,
+                start_date=start_date,
+                end_date=end_date,
             )
         except DataLoadError as e:
             return create_error_response(str(e))

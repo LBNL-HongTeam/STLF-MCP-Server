@@ -38,7 +38,7 @@ Ask once, early: "What timezone are the timestamps in, and are they naive local 
 
 ## Section 3 — `inspect_data` (numeric profile)
 
-Call `inspect_data(csv_path)` (add `column_mapping` only if the user has told you the roles). Report, in this order:
+Call `inspect_data(csv_path)` (add `column_mapping` only if the user has told you the roles). If the user only cares about part of the file, or a stretch of it is known-bad (e.g. missing meter data at the end), pass `start_date` / `end_date` (inclusive; a date-only `end_date` keeps that whole day) so every figure below describes only that window; the response's `date_window` says how many rows were excluded. Report, in this order:
 
 1. **Roles** from `columns`: `datetime`, `target`, `past_covariates`; then the hints —
    - `unrecognised`: numeric columns auto-detection did not map. If any looks like a driver (weather, occupancy, production), say it would need `column_mapping.past_covariates` to be used.

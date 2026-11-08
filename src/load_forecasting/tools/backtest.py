@@ -11,6 +11,7 @@ import logging
 import pandas as pd
 
 from ..core.data_loader import DataLoadError
+from ..core.date_window import DateWindowError, align_to_index_tz, parse_timestamp
 from ..core.trainer import generate_predictions
 from ..core.evaluator import (
     calculate_residual_analysis,
@@ -228,17 +229,85 @@ def _run_probabilistic_backtest(
     return out
 
 
+DEFAULT_START_FRACTION = 0.2
+
+
+def _resolve_backtest_start(
+    backtest_start_date: str,
+    target_series,
+    loader,
+    lookback_steps: int,
+) -> tuple[int, int]:
+    """Map ``backtest_start_date`` to a series position for the first forecast.
+
+    The first forecast needs ``lookback_steps`` of input, and every one of
+    those inputs must carry real lag features (lags are forward-filled at the
+    very start of the loaded data).  So the earliest valid position is the lag
+    warm-up plus the lookback.  Rows before the returned position are used
+    only as model context, never scored.
+
+    Returns (start_idx, earliest_valid_idx).  Raises _ModelLoadError with the
+    earliest valid date when the requested date is too early or past the data.
+    """
+    time_index = target_series.time_index
+    try:
+        origin = parse_timestamp(backtest_start_date, "backtest_start_date", time_index.tz)
+    except DateWindowError as e:
+        raise _ModelLoadError(create_error_response(str(e)))
+
+    warmup_idx = 0
+    reason = f"the model's lookback of {lookback_steps} steps"
+    if loader.lag_warmup_until is not None:
+        warm = align_to_index_tz(pd.Timestamp(loader.lag_warmup_until), time_index.tz)
+        warmup_idx = int(time_index.searchsorted(warm))
+        if warmup_idx > 0:
+            reason = (
+                f"{max(loader.lag_hours)} h of real history for the lag features "
+                f"plus the model's lookback of {lookback_steps} steps"
+            )
+    earliest_idx = warmup_idx + lookback_steps
+
+    if earliest_idx >= len(time_index):
+        raise _ModelLoadError(
+            create_error_response(
+                f"Not enough data for a backtest: {reason} need {earliest_idx} steps "
+                f"but the series has {len(time_index)}."
+            )
+        )
+    start_idx = int(time_index.searchsorted(origin))
+    if start_idx >= len(time_index):
+        raise _ModelLoadError(
+            create_error_response(
+                f"backtest_start_date={backtest_start_date!r} is after the last "
+                f"timestamp in the data ({time_index[-1].isoformat()})."
+            )
+        )
+    if start_idx < earliest_idx:
+        earliest = time_index[earliest_idx].isoformat()
+        raise _ModelLoadError(
+            create_error_response(
+                f"backtest_start_date={backtest_start_date!r} leaves too little history "
+                f"before the first forecast: {reason} put the earliest valid first "
+                f"forecast at {earliest}. Use backtest_start_date='{earliest}' or later."
+            )
+        )
+    return start_idx, earliest_idx
+
+
 def _run_backtest_core(
     model_id: str,
     csv_path: str,
     column_mapping: Optional[dict],
     stride_hours: Optional[int],
-    start_fraction: float,
+    start_fraction: Optional[float],
     include_residual_analysis: bool,
     peak_dates: Optional[list],
     *,
     reconstruct_windows: bool = False,
     num_samples: int = 200,
+    backtest_start_date: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> dict:
     """Shared rolling-backtest pipeline for backtest_model + generate_backtest_report.
 
@@ -255,10 +324,19 @@ def _run_backtest_core(
     # Validate parameters (fail fast before loading model/data)
     if stride_hours is not None and not 1 <= stride_hours <= 96:
         raise _ModelLoadError(create_error_response("stride_hours must be between 1 and 96"))
-    if not 0.1 <= start_fraction <= 0.5:
+    if backtest_start_date and start_fraction is not None:
         raise _ModelLoadError(
-            create_error_response("start_fraction must be between 0.1 and 0.5")
+            create_error_response(
+                "Pass either start_fraction or backtest_start_date, not both."
+            )
         )
+    if not backtest_start_date:
+        if start_fraction is None:
+            start_fraction = DEFAULT_START_FRACTION
+        if not 0.1 <= start_fraction <= 0.5:
+            raise _ModelLoadError(
+                create_error_response("start_fraction must be between 0.1 and 0.5")
+            )
 
     column_mapping_source = "provided" if column_mapping else "from_model_metadata"
     ctx = _load_model_context(model_id, column_mapping)
@@ -280,6 +358,8 @@ def _run_backtest_core(
             scalers=scalers,
             frequency=frequency,
             metadata=metadata,
+            start_date=start_date,
+            end_date=end_date,
         )
     except DataLoadError as e:
         raise _ModelLoadError(create_error_response(f"Failed to load data: {e}"))
@@ -300,13 +380,23 @@ def _run_backtest_core(
     )
     effective_stride_hours = stride_hours if stride_hours is not None else horizon_hours_cfg
 
-    start_idx = max(lookback_steps, int(start_fraction * len(target_series)))
+    earliest_idx = None
+    if backtest_start_date:
+        start_idx, earliest_idx = _resolve_backtest_start(
+            backtest_start_date, target_series, loader, lookback_steps
+        )
+    else:
+        start_idx = max(lookback_steps, int(start_fraction * len(target_series)))
     if start_idx + horizon_steps > len(target_series):
         raise _ModelLoadError(
             create_error_response(
                 f"Not enough data for backtest: series has {len(target_series)} steps but "
                 f"start_idx={start_idx} + horizon={horizon_steps} exceeds series length. "
-                "Reduce start_fraction or use a longer CSV."
+                + (
+                    "Use an earlier backtest_start_date or a later end_date."
+                    if backtest_start_date
+                    else "Reduce start_fraction or use a longer CSV."
+                )
             )
         )
 
@@ -361,7 +451,8 @@ def _run_backtest_core(
         "n_windows": n_windows,
         "stride_hours": effective_stride_hours,
         "stride_steps": stride_steps,
-        "start_fraction": start_fraction,
+        "start_mode": "date" if backtest_start_date else "fraction",
+        "start_fraction": None if backtest_start_date else start_fraction,
         "backtest_start_date": (
             loader.df.index[start_idx].isoformat() if start_idx < len(loader.df) else None
         ),
@@ -369,6 +460,13 @@ def _run_backtest_core(
         "total_samples": len(loader.df),
         "column_mapping_source": column_mapping_source,
     }
+    if backtest_start_date:
+        backtest_summary["requested_backtest_start_date"] = backtest_start_date
+        backtest_summary["earliest_valid_backtest_start_date"] = (
+            target_series.time_index[earliest_idx].isoformat()
+        )
+    if loader.date_window_info:
+        backtest_summary["date_window"] = loader.date_window_info
 
     # ---- probabilistic (interval) backtest -------------------------------
     # A second, stochastic rolling pass for quantile-trained models.  Point
@@ -454,12 +552,15 @@ def backtest_model(
     csv_path: str,
     column_mapping: Optional[dict] = None,
     stride_hours: Optional[int] = None,
-    start_fraction: float = 0.2,
+    start_fraction: Optional[float] = None,
     return_predictions: bool = True,
     output_csv_path: Optional[str] = None,
     include_residual_analysis: bool = False,
     peak_dates: Optional[list] = None,
     num_samples: int = 200,
+    backtest_start_date: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> dict:
     """
     Run a rolling-window backtest of a trained model on historical data.
@@ -477,7 +578,23 @@ def backtest_model(
             values produce overlapping windows and more prediction points.
         start_fraction: Fraction of the series to skip before starting the
             rolling forecast.  Ensures the model has enough history to warm up.
-            Must be between 0.1 and 0.5.  Default: 0.2.
+            Must be between 0.1 and 0.5.  Default: 0.2 when
+            backtest_start_date is not given.  Mutually exclusive with
+            backtest_start_date.
+        backtest_start_date: Timestamp of the first forecast to score
+            ('YYYY-MM-DD' or 'YYYY-MM-DD HH:MM'), as an alternative to
+            start_fraction.  Earlier rows are used only as model context.  It
+            must leave enough history for the lag features (168 h by default)
+            plus the model's lookback; if it does not, the error names the
+            earliest valid date.  Use this to score as much of a period as
+            possible with an already-trained model.
+        start_date: Optional inclusive start of the data to use.  Rows before
+            it are ignored (apart from lag-feature history).
+        end_date: Optional inclusive end of the data to use.  A date-only
+            value includes that whole day, e.g. end_date='2023-10-31' scores
+            through 2023-10-31 23:00 and ignores November-December.  Only a
+            contiguous window is supported; to skip a period in the middle,
+            run two backtests.
         return_predictions: If True, include per-step predictions in the
             response.  Can be large for long series.
         output_csv_path: Optional path to write predictions as CSV.
@@ -506,6 +623,9 @@ def backtest_model(
                 include_residual_analysis=include_residual_analysis,
                 peak_dates=peak_dates,
                 num_samples=num_samples,
+                backtest_start_date=backtest_start_date,
+                start_date=start_date,
+                end_date=end_date,
             )
         except _ModelLoadError as e:
             return e.response

@@ -10,7 +10,7 @@ Built on [Darts](https://github.com/unit8co/darts) for the modelling and
 [FastMCP](https://github.com/jlowin/fastmcp) for the server. A software
 article is in preparation; see [Citation](#citation).
 
-> **Version**: 0.1.0
+> **Version**: 0.2.0
 > **Python**: 3.11–3.12
 
 ## 📑 Table of Contents

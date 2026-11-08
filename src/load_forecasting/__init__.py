@@ -11,4 +11,4 @@ Tools:
     - get_algorithm_specifications: Return specs for AI discovery
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
