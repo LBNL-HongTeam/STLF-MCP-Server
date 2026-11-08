@@ -54,9 +54,9 @@ except Exception:
     _DARTS_VERSION = "unknown"
 
 try:
-    _PKG_VERSION: str = importlib.metadata.version("load-forecasting-mcp")
+    _PKG_VERSION: str = importlib.metadata.version("STLF_MCP")
 except Exception:
-    _PKG_VERSION = "0.1.0"
+    from .. import __version__ as _PKG_VERSION
 
 _PYTHON_VERSION: str = (
     f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
