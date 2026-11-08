@@ -1,0 +1,52 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+type: software
+title: "STLF-MCP: A Model Context Protocol server for short-term electrical load forecasting"
+version: 0.2.0
+authors:
+  - family-names: Wang
+    given-names: Taoning
+    affiliation: Lawrence Berkeley National Laboratory
+  - family-names: Li
+    given-names: Han
+    affiliation: Lawrence Berkeley National Laboratory
+  - family-names: Hong
+    given-names: Tianzhen
+    affiliation: Lawrence Berkeley National Laboratory
+    email: thong@lbl.gov
+license: BSD-3-Clause-LBNL
+repository-code: "https://github.com/LBNL-HongTeam/STLF-MCP-Server"
+abstract: >-
+  STLF-MCP is an open-source Model Context Protocol (MCP) server that exposes
+  a short-term electrical load forecasting workflow to AI assistants. Its tools
+  inspect interval-meter data, merge weather covariates, train and tune 12
+  forecasting algorithms, evaluate point and probabilistic forecasts with
+  peak-day metrics, run rolling-window backtests, generate forecasts, and
+  produce self-contained HTML reports.
+keywords:
+  - short-term load forecasting
+  - Model Context Protocol
+  - advanced metering infrastructure
+  - time series
+  - machine learning
+references:
+  - type: article
+    title: "A cross-dimensional analysis of data-driven short-term load forecasting methods with large-scale smart meter data"
+    authors:
+      - family-names: Li
+        given-names: Han
+      - family-names: Heleno
+        given-names: Miguel
+      - family-names: Zhang
+        given-names: Wanni
+      - family-names: Sun
+        given-names: Kaiyu
+      - family-names: Rodriguez Garcia
+        given-names: Luis
+      - family-names: Hong
+        given-names: Tianzhen
+    journal: Energy and Buildings
+    volume: 344
+    start: 115909
+    year: 2025
+    doi: 10.1016/j.enbuild.2025.115909
