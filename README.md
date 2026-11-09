@@ -706,7 +706,7 @@ replace this placeholder with the published citation once the paper is accepted.
 To cite the software itself, use its Zenodo archive. The DOI
 [10.5281/zenodo.24065239](https://doi.org/10.5281/zenodo.24065239) always
 resolves to the latest release, and each release has its own DOI, for example
-[10.5281/zenodo.24065240](https://doi.org/10.5281/zenodo.24065240) for v0.2.0.
+[10.5281/zenodo.24065741](https://doi.org/10.5281/zenodo.24065741) for v0.2.0.
 GitHub's "Cite this repository" button uses [`CITATION.cff`](CITATION.cff).
 
 ```bibtex
@@ -716,8 +716,8 @@ GitHub's "Cite this repository" button uses [`CITATION.cff`](CITATION.cff).
   version={0.2.0},
   year={2026},
   publisher={Zenodo},
-  doi={10.5281/zenodo.24065240},
-  url={https://doi.org/10.5281/zenodo.24065240}
+  doi={10.5281/zenodo.24065741},
+  url={https://doi.org/10.5281/zenodo.24065741}
 }
 ```
 
