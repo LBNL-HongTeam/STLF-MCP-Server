@@ -27,7 +27,7 @@ inputs:
     required: true
     delivery_mode: file_reference
     description: Path to the CSV (absolute, or relative to the server's data roots)
-    example: "/data/examples/AMI/_merged_LENTS_HAPPY_VALLEY.csv"
+    example: "/data/examples/AMI/_merged_SUB_C-F1.csv"
 
   - name: output_html_path
     type: string
@@ -38,7 +38,7 @@ inputs:
       (if set) or <repo>/outputs/reports, and returns the path. Absolute paths are
       recommended when given; relative paths resolve against the server's
       working directory, not the client's.
-    example: "/tmp/reports/lents_2021_data_report.html"
+    example: "/tmp/reports/feeder_2021_data_report.html"
 
   - name: column_mapping
     type: object

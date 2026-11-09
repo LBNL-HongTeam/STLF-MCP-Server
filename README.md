@@ -464,8 +464,8 @@ export:
 {
   "tool": "batch_train_forecast_models",
   "arguments": {
-    "csv_path": "data/examples/AMI/2021_feeder_level-LENTS_substation.csv",
-    "target_columns": ["LENTS-HAPPY VALLEY (n=3345)", "LENTS-13101 (n=2119)"],
+    "csv_path": "data/examples/AMI/2021_feeder_level-SUB_C_substation.csv",
+    "target_columns": ["SUB_C-F1 (n=3345)", "SUB_C-F2 (n=2119)"],
     "datetime_col": "Datetime",
     "model_type": "XGBoost",
     "lookback_hours": 48,

@@ -9,7 +9,7 @@ Covers subtask 1.2 (future covariates with real weather data) and subtask 1.4
 
   - District level:   data/examples/AMI/2021_city_level.csv
   - Substation level: data/examples/AMI/2021_substation_level.csv
-  - Feeder level:     data/examples/AMI/2021_feeder_level-GLENDOVEER_substation.csv
+  - Feeder level:     data/examples/AMI/2021_feeder_level-SUB_A_substation.csv
   - Neighborhood proxy: the smallest available feeder circuit (583 customers)
 
 Weather data (2021-2023_openmeteo_weather.csv) is merged with each load dataset
@@ -43,14 +43,14 @@ _AMI_DIR = _REPO_ROOT / "data" / "examples" / "AMI"
 
 _CITY_CSV = _AMI_DIR / "2021_city_level.csv"
 _SUBSTATION_CSV = _AMI_DIR / "2021_substation_level.csv"
-_FEEDER_CSV = _AMI_DIR / "2021_feeder_level-GLENDOVEER_substation.csv"
+_FEEDER_CSV = _AMI_DIR / "2021_feeder_level-SUB_A_substation.csv"
 _WEATHER_CSV = _AMI_DIR / "2021-2023_openmeteo_weather.csv"
 
 # Specific load columns used per level
 _CITY_TARGET = "City (n=41703)"
-_SUBSTATION_TARGET = "GLENDOVEER (n=9214)"
-_FEEDER_TARGET = "GLENDOVEER-13599 (n=1910)"
-_NEIGHBORHOOD_PROXY_TARGET = "GLENDOVEER-13596 (n=583)"
+_SUBSTATION_TARGET = "SUB_A (n=9214)"
+_FEEDER_TARGET = "SUB_A-F1 (n=1910)"
+_NEIGHBORHOOD_PROXY_TARGET = "SUB_A-F5 (n=583)"
 
 # Weather columns used as covariates
 _PAST_WEATHER_COLS = ["T_out", "RH_out"]
@@ -251,7 +251,7 @@ class TestCityLevel:
 # ===========================================================================
 
 class TestSubstationLevel:
-    """Pipeline validation on substation-level AMI data (GLENDOVEER substation)."""
+    """Pipeline validation on substation-level AMI data (SUB_A substation)."""
 
     async def test_inspect_data(self, substation_merged_csv, ami_model_dir):
         result = inspect_data(
@@ -317,7 +317,7 @@ class TestSubstationLevel:
 # ===========================================================================
 
 class TestFeederLevel:
-    """Pipeline validation on feeder-level AMI data (GLENDOVEER-13599 circuit)."""
+    """Pipeline validation on feeder-level AMI data (SUB_A-F1 circuit)."""
 
     async def test_inspect_data(self, feeder_merged_csv, ami_model_dir):
         result = inspect_data(
