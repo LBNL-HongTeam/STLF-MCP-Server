@@ -1,5 +1,7 @@
 # STLF-MCP-Server
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24065239.svg)](https://doi.org/10.5281/zenodo.24065239)
+
 A Model Context Protocol (MCP) server that provides **20 tools** for
 **short-term load forecasting (STLF)** of building and grid electrical demand.
 This server enables AI assistants and other MCP clients to inspect data, merge
@@ -698,6 +700,24 @@ replace this placeholder with the published citation once the paper is accepted.
   author={Wang, Taoning and Li, Han and Hong, Tianzhen},
   year={2026},
   note={Manuscript in preparation}
+}
+```
+
+To cite the software itself, use its Zenodo archive. The DOI
+[10.5281/zenodo.24065239](https://doi.org/10.5281/zenodo.24065239) always
+resolves to the latest release, and each release has its own DOI, for example
+[10.5281/zenodo.24065240](https://doi.org/10.5281/zenodo.24065240) for v0.2.0.
+GitHub's "Cite this repository" button uses [`CITATION.cff`](CITATION.cff).
+
+```bibtex
+@software{wang2026stlfmcp_v020,
+  title={STLF-MCP: A Model Context Protocol server for short-term electrical load forecasting},
+  author={Wang, Taoning and Li, Han and Hong, Tianzhen},
+  version={0.2.0},
+  year={2026},
+  publisher={Zenodo},
+  doi={10.5281/zenodo.24065240},
+  url={https://doi.org/10.5281/zenodo.24065240}
 }
 ```
 
