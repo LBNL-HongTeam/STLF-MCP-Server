@@ -8,8 +8,8 @@ Reference:
     DOI: 10.1016/j.enbuild.2025.115909
 
 Setup mirrors the paper exactly:
-  - Training data  : 2021 Portland General Electric AMI data
-  - Test data      : 2023 Portland General Electric AMI data
+  - Training data  : 2021 utility AMI data (city of 41,703 customers)
+  - Test data      : 2023 utility AMI data (city of 41,703 customers)
   - lookback_hours : 96  (paper's four-day window)
   - horizon_hours  : 96  (paper's four-day horizon)
   - frequency      : "h" (hourly; paper downsampled 15-min → hourly)
@@ -72,10 +72,10 @@ CITY_2023 = os.path.join(AMI_DIR, "2023_city_level_observed.csv")
 SUBSTATION_2021 = os.path.join(AMI_DIR, "2021_substation_level.csv")
 SUBSTATION_2023 = os.path.join(AMI_DIR, "2023_substation_level.csv")
 
-# Feeder level — use the pre-merged LENTS HAPPY VALLEY file (has weather)
-FEEDER_2021_MERGED = os.path.join(AMI_DIR, "_merged_LENTS_HAPPY_VALLEY.csv")
-# For 2023 feeder test we build a single-target CSV from the LENTS feeder file
-FEEDER_2023_LENTS = os.path.join(AMI_DIR, "2023_feeder_level-LENTS_substation.csv")
+# Feeder level — use the pre-merged SUB_C-F1 file (has weather)
+FEEDER_2021_MERGED = os.path.join(AMI_DIR, "_merged_SUB_C-F1.csv")
+# For 2023 feeder test we build a single-target CSV from the SUB_C feeder file
+FEEDER_2023_SUB_C = os.path.join(AMI_DIR, "2023_feeder_level-SUB_C_substation.csv")
 # Open-Meteo weather covering 2021-2023, merged into the 2023 feeder test CSV
 WEATHER_CSV = os.path.join(AMI_DIR, "2021-2023_openmeteo_weather.csv")
 
@@ -294,16 +294,16 @@ class TestPaperReplicationSubstationLevel:
     """
     Train on 2021 substation data, evaluate on 2023.
 
-    Uses GLENDOVEER substation (n=9,214 customers) as representative target.
+    Uses SUB_A substation (n=9,214 customers) as representative target.
     Paper reference: substation level. Expected MAPE < 15% for XGBoost (Fig. 5).
     """
 
-    TARGET_COL = "GLENDOVEER (n=9214)"
+    TARGET_COL = "SUB_A (n=9214)"
     DT_COL = "Datetime"
 
     @pytest.fixture(autouse=True)
     def _build_temp_csvs(self, tmp_path):
-        """Create single-target CSVs for the GLENDOVEER substation."""
+        """Create single-target CSVs for the SUB_A substation."""
         self.train_csv = str(tmp_path / "substation_train.csv")
         self.test_csv = str(tmp_path / "substation_test.csv")
 
@@ -328,7 +328,7 @@ class TestPaperReplicationSubstationLevel:
             horizon_hours=HORIZON_HOURS,
             frequency="h",
             validation_split=0.2,
-            building_name="substation_glendoveer",
+            building_name="substation_sub_a",
             column_mapping=self.column_mapping,
         )
         assert result["success"], f"Training failed: {result.get('error')}"
@@ -363,7 +363,7 @@ class TestPaperReplicationSubstationLevel:
             horizon_hours=HORIZON_HOURS,
             frequency="h",
             validation_split=0.2,
-            building_name="substation_glendoveer",
+            building_name="substation_sub_a",
             column_mapping=self.column_mapping,
         )
         assert result["success"], f"Training failed: {result.get('error')}"
@@ -395,20 +395,20 @@ class TestPaperReplicationSubstationLevel:
 # ==============================================================================
 
 @pytest.mark.skipif(
-    not _files_exist(FEEDER_2021_MERGED, FEEDER_2023_LENTS),
+    not _files_exist(FEEDER_2021_MERGED, FEEDER_2023_SUB_C),
     reason="AMI feeder CSV files not found — skipping paper replication test",
 )
 class TestPaperReplicationFeederLevel:
     """
-    Train on 2021 LENTS HAPPY VALLEY feeder data (pre-merged with weather),
-    evaluate on 2023 LENTS feeder data.
+    Train on 2021 SUB_C-F1 feeder data (pre-merged with weather),
+    evaluate on 2023 SUB_C feeder data.
 
     Paper reference: feeder level. Expected MAPE 10-30% for LinearRegression
     and XGBoost at 96h horizon (Fig. 5).
     """
 
-    FEEDER_COL_2021 = "LENTS-HAPPY VALLEY (n=3345)"
-    FEEDER_COL_2023 = "LENTS-HAPPY VALLEY (n=3345)"
+    FEEDER_COL_2021 = "SUB_C-F1 (n=3345)"
+    FEEDER_COL_2023 = "SUB_C-F1 (n=3345)"
     DT_COL = "Datetime"
     WEATHER_COLS = ["T_out", "RH_out", "Direct_Radiation"]
 
@@ -427,7 +427,7 @@ class TestPaperReplicationFeederLevel:
         # 2023 test — extract from multi-column feeder file and merge weather.
         # The weather covariates are required: the model is trained with them,
         # so the evaluation CSV must expose the same past-covariate columns.
-        df23 = pd.read_csv(FEEDER_2023_LENTS)
+        df23 = pd.read_csv(FEEDER_2023_SUB_C)
         df23 = df23[[self.DT_COL, self.FEEDER_COL_2023]].rename(
             columns={self.FEEDER_COL_2023: "load_kwh"}
         )
@@ -460,7 +460,7 @@ class TestPaperReplicationFeederLevel:
             horizon_hours=HORIZON_HOURS,
             frequency="h",
             validation_split=0.2,
-            building_name="feeder_lents_happy_valley",
+            building_name="feeder_sub_c_f1",
             column_mapping=self.train_mapping,
         )
         assert result["success"], f"Training failed: {result.get('error')}"
@@ -496,7 +496,7 @@ class TestPaperReplicationFeederLevel:
             horizon_hours=HORIZON_HOURS,
             frequency="h",
             validation_split=0.2,
-            building_name="feeder_lents_happy_valley",
+            building_name="feeder_sub_c_f1",
             column_mapping=self.train_mapping,
         )
         assert result["success"], f"Training failed: {result.get('error')}"

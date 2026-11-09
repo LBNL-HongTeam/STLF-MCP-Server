@@ -653,7 +653,7 @@ def inspect_data(
                 "removes the November fall-back duplicate; "
                 "(2) merge with a left join from the load file, then call "
                 "ffill() on the weather columns to fill the March spring-forward "
-                "gap. See scripts/merge_lents_weather.py for the full example."
+                "gap. merge_covariates applies both steps."
             )
         # Outlier suggestions
         if outlier_report.get("analysis_available"):

@@ -14,7 +14,7 @@ load.  Training on the correctly aligned 2021 file and testing on that file
 inflated TiDE's test MAPE from 3.93% to 9.04% and its CV-RMSE from 5.70% to
 12.18%.
 
-The checks below are physical rather than statistical: at Portland's latitude
+The checks below are physical rather than statistical: at the site's mid-latitude
 solar radiation must peak near solar noon and air temperature a couple of
 hours after it.  A whole-day shift moves both into the night, which no
 plausible measurement error can do.
@@ -126,6 +126,6 @@ def test_weather_source_is_local_time():
     r_peak = _mean_by_hour(df, "date", "Direct_Radiation").idxmax()
     assert 12 <= t_peak <= 19 and 10 <= r_peak <= 16, (
         f"{WEATHER_SRC}: T_out peaks {t_peak:02d}:00, Direct_Radiation "
-        f"{r_peak:02d}:00 -- this export is not Portland local time. "
+        f"{r_peak:02d}:00 -- this export is not local time. "
         f"build_paper_datasets.py assumes it is."
     )
